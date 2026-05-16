@@ -97,6 +97,9 @@ This creates a VOMS-style architecture demo with a user CRUD vertical slice:
   backend/internal/domain   User entity and repository contract
   backend/internal/usecase  User service
   backend/internal/interface/rest User REST controller
+  backend/internal/interface/rest/middlewares CORS, trace, request log, recovery
+  backend/internal/interface/rest/router Route assembly
+  backend/internal/interface/rest/router/routes User route registration
   backend/internal/infrastructure/gateways/persistence/memory User repository gateway
   backend/internal/infrastructure/gateways/notification/memory User notification gateway
   backend/internal/infrastructure/gateways/queue/memory Domain event gateway
@@ -140,7 +143,13 @@ async function writeProject(root, ctx) {
     "backend/internal/usecase",
     "backend/internal/usecase/user",
     "backend/internal/interface/rest",
-    "backend/internal/interface/rest/middleware",
+    "backend/internal/interface/rest/controllers",
+    "backend/internal/interface/rest/dto",
+    "backend/internal/interface/rest/dto/requests",
+    "backend/internal/interface/rest/dto/responses",
+    "backend/internal/interface/rest/middlewares",
+    "backend/internal/interface/rest/router",
+    "backend/internal/interface/rest/router/routes",
     "backend/internal/infrastructure",
     "backend/internal/infrastructure/gateways",
     "backend/internal/infrastructure/gateways/notification",
@@ -221,8 +230,16 @@ function buildFiles(ctx) {
     "backend/internal/usecase/README.md": layerReadme("应用服务层", "编排业务流程、事务边界和跨领域协作。"),
     "backend/internal/usecase/user/service.go": backendUserService(ctx),
     "backend/internal/interface/rest/README.md": layerReadme("接口适配层", "HTTP 路由、请求绑定、响应封装和协议转换。"),
-    "backend/internal/interface/rest/response.go": backendRestResponse(),
-    "backend/internal/interface/rest/user_handler.go": backendUserHandler(ctx),
+    "backend/internal/interface/rest/controllers/response.go": backendRestResponse(),
+    "backend/internal/interface/rest/controllers/user_handler.go": backendUserHandler(ctx),
+    "backend/internal/interface/rest/dto/requests/user.go": backendUserRequestDTO(ctx),
+    "backend/internal/interface/rest/dto/responses/user.go": backendUserResponseDTO(ctx),
+    "backend/internal/interface/rest/middlewares/cors.go": backendCorsMiddleware(ctx),
+    "backend/internal/interface/rest/middlewares/recovery.go": backendRecoveryMiddleware(ctx),
+    "backend/internal/interface/rest/middlewares/request_log.go": backendRequestLogMiddleware(ctx),
+    "backend/internal/interface/rest/middlewares/trace.go": backendTraceMiddleware(),
+    "backend/internal/interface/rest/router/router.go": backendRouter(ctx),
+    "backend/internal/interface/rest/router/routes/users.go": backendUserRoutes(ctx),
     "backend/internal/infrastructure/README.md": layerReadme("基础设施层", "数据库、缓存、消息、文件、外部服务和可观测实现。"),
     "backend/internal/infrastructure/gateways/README.md": layerReadme("Gateways", "对外部系统和持久化能力的适配层，如数据库、队列、通知、对象存储和第三方 API。"),
     "backend/internal/infrastructure/gateways/persistence/README.md": layerReadme("Persistence Gateway", "持久化网关，负责把领域仓储契约适配到具体存储实现。"),
@@ -238,6 +255,10 @@ function buildFiles(ctx) {
     "backend/internal/infrastructure/support/logger/std/logger.go": backendStdLogger(),
     "backend/internal/wire/README.md": layerReadme("组装层", "依赖注入、生命周期管理和应用装配。"),
     "backend/internal/wire/app.go": backendWireApp(ctx),
+    "backend/internal/wire/infrastructure.go": backendWireInfrastructure(ctx),
+    "backend/internal/wire/repositories.go": backendWireRepositories(ctx),
+    "backend/internal/wire/usecases.go": backendWireUsecases(ctx),
+    "backend/internal/wire/controllers.go": backendWireControllers(ctx),
     "backend/migrations/up/000001_init_users.sql": backendUsersMigration(),
     "front/AGENTS.md": moduleAgents("front", "../AGENTS.md", "make build-front-admin && make build-front-public", [
       "Web 与小程序客户端族",
@@ -600,7 +621,7 @@ function backendFolderIndex() {
 ### \`internal/interface/\`
 - 地位: 接口适配层
 - 功能: HTTP/gRPC 协议适配、参数绑定与响应封装
-- 示例: \`internal/interface/rest.UserHandler\` 暴露 \`/api/v1/users\`
+- 示例: \`internal/interface/rest/controllers.UserHandler\` 处理用户请求，\`router/routes\` 注册 \`/api/v1/users\` 路由，\`middlewares\` 处理 CORS、Trace、请求日志和 Recovery
 
 ### \`internal/infrastructure/\`
 - 地位: 基础设施实现层
@@ -610,7 +631,7 @@ function backendFolderIndex() {
 ### \`internal/wire/\`
 - 地位: 组装层
 - 功能: 应用依赖注入与生命周期管理
-- 示例: \`internal/wire.NewApp\` 装配仓储、用例和 HTTP 路由
+- 示例: \`internal/wire.NewApp\` 串起 \`InitInfrastructure\`、\`InitRepositories\`、\`InitUseCases\`、\`InitControllers\` 和 HTTP Router
 
 ### \`migrations/up/\`
 - 地位: 数据库 schema 演进入口
@@ -640,7 +661,7 @@ function backendCodemap() {
 
 ## Flow
 
-用户 CRUD 请求进入 \`internal/interface/rest.UserHandler\`，Handler 调用 \`internal/usecase/user.Service\`，Service 围绕 \`internal/domain/user.User\` 执行业务规则，并通过 \`gateways/persistence\` 完成持久化，通过 \`support/cache\` 缓存列表读模型，通过 \`gateways/queue\` 发布领域事件，通过 \`gateways/notification\` 触发通知。
+用户 CRUD 请求先经过 \`interface/rest/middlewares\`，再由 \`interface/rest/router/routes\` 分发到 \`controllers.UserHandler\`。Handler 调用 \`internal/usecase/user.Service\`，Service 围绕 \`internal/domain/user.User\` 执行业务规则，并通过 \`gateways/persistence\` 完成持久化，通过 \`support/cache\` 缓存列表读模型，通过 \`gateways/queue\` 发布领域事件，通过 \`gateways/notification\` 触发通知。依赖由 \`internal/wire\` 分层装配。
 `;
 }
 
@@ -1016,7 +1037,7 @@ func (s *Service) afterUserChanged(ctx context.Context, subject string, entity d
 }
 
 function backendRestResponse() {
-  return `package rest
+  return `package controllers
 
 import (
 \t"encoding/json"
@@ -1047,7 +1068,7 @@ func writeError(w http.ResponseWriter, status int, message string) {
 
 function backendUserHandler(ctx) {
   const mod = moduleName(ctx.projectName);
-  return `package rest
+  return `package controllers
 
 import (
 \t"encoding/json"
@@ -1056,6 +1077,8 @@ import (
 \t"strings"
 
 \tdomain "${mod}/backend/internal/domain/user"
+\t"${mod}/backend/internal/interface/rest/dto/requests"
+\t"${mod}/backend/internal/interface/rest/dto/responses"
 \tuseruc "${mod}/backend/internal/usecase/user"
 )
 
@@ -1067,63 +1090,55 @@ func NewUserHandler(service *useruc.Service) *UserHandler {
 \treturn &UserHandler{service: service}
 }
 
-func (h *UserHandler) Register(mux *http.ServeMux) {
-\tmux.HandleFunc("GET /api/v1/users", h.list)
-\tmux.HandleFunc("POST /api/v1/users", h.create)
-\tmux.HandleFunc("GET /api/v1/users/{id}", h.get)
-\tmux.HandleFunc("PUT /api/v1/users/{id}", h.update)
-\tmux.HandleFunc("DELETE /api/v1/users/{id}", h.delete)
-}
-
-func (h *UserHandler) list(w http.ResponseWriter, r *http.Request) {
+func (h *UserHandler) List(w http.ResponseWriter, r *http.Request) {
 \titems, err := h.service.List(r.Context())
 \tif err != nil {
 \t\twriteError(w, http.StatusInternalServerError, err.Error())
 \t\treturn
 \t}
-\twriteJSON(w, http.StatusOK, "ok", map[string]interface{}{"items": items})
+\twriteJSON(w, http.StatusOK, "ok", responses.UserListFromDomain(items))
 }
 
-func (h *UserHandler) create(w http.ResponseWriter, r *http.Request) {
-\tvar input domain.CreateInput
+func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
+\tvar input requests.UserPayload
 \tif err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 \t\twriteError(w, http.StatusBadRequest, "invalid json body")
 \t\treturn
 \t}
 
-\tentity, err := h.service.Create(r.Context(), input)
+\tentity, err := h.service.Create(r.Context(), input.ToCreateInput())
 \tif err != nil {
 \t\thandleUserError(w, err)
 \t\treturn
 \t}
-\twriteJSON(w, http.StatusCreated, "created", entity)
+\twriteJSON(w, http.StatusCreated, "created", responses.UserFromDomain(entity))
 }
 
-func (h *UserHandler) get(w http.ResponseWriter, r *http.Request) {
+func (h *UserHandler) Get(w http.ResponseWriter, r *http.Request) {
 \tentity, err := h.service.Get(r.Context(), strings.TrimSpace(r.PathValue("id")))
 \tif err != nil {
 \t\thandleUserError(w, err)
 \t\treturn
 \t}
-\twriteJSON(w, http.StatusOK, "ok", entity)
+\twriteJSON(w, http.StatusOK, "ok", responses.UserFromDomain(entity))
 }
 
-func (h *UserHandler) update(w http.ResponseWriter, r *http.Request) {
-\tvar input domain.UpdateInput
+func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
+\tvar input requests.UserPayload
 \tif err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 \t\twriteError(w, http.StatusBadRequest, "invalid json body")
 \t\treturn
 \t}
 
-\tentity, err := h.service.Update(r.Context(), strings.TrimSpace(r.PathValue("id")), input)
+\tentity, err := h.service.Update(r.Context(), strings.TrimSpace(r.PathValue("id")), input.ToUpdateInput())
 \tif err != nil {
 \t\thandleUserError(w, err)
 \t\treturn
 \t}
-\twriteJSON(w, http.StatusOK, "updated", entity)
+\twriteJSON(w, http.StatusOK, "updated", responses.UserFromDomain(entity))
 }
 
-func (h *UserHandler) delete(w http.ResponseWriter, r *http.Request) {
+func (h *UserHandler) Delete(w http.ResponseWriter, r *http.Request) {
 \tif err := h.service.Delete(r.Context(), strings.TrimSpace(r.PathValue("id"))); err != nil {
 \t\thandleUserError(w, err)
 \t\treturn
@@ -1140,6 +1155,269 @@ func handleUserError(w http.ResponseWriter, err error) {
 \tdefault:
 \t\twriteError(w, http.StatusBadRequest, err.Error())
 \t}
+}
+`;
+}
+
+function backendUserRequestDTO(ctx) {
+  const mod = moduleName(ctx.projectName);
+  return `package requests
+
+import domain "${mod}/backend/internal/domain/user"
+
+type UserPayload struct {
+\tName   string        \`json:"name"\`
+\tEmail  string        \`json:"email"\`
+\tRole   string        \`json:"role"\`
+\tStatus domain.Status \`json:"status"\`
+}
+
+func (p UserPayload) ToCreateInput() domain.CreateInput {
+\treturn domain.CreateInput{
+\t\tName:   p.Name,
+\t\tEmail:  p.Email,
+\t\tRole:   p.Role,
+\t\tStatus: p.Status,
+\t}
+}
+
+func (p UserPayload) ToUpdateInput() domain.UpdateInput {
+\treturn domain.UpdateInput{
+\t\tName:   p.Name,
+\t\tEmail:  p.Email,
+\t\tRole:   p.Role,
+\t\tStatus: p.Status,
+\t}
+}
+`;
+}
+
+function backendUserResponseDTO(ctx) {
+  const mod = moduleName(ctx.projectName);
+  return `package responses
+
+import domain "${mod}/backend/internal/domain/user"
+
+type User struct {
+\tID        string        \`json:"id"\`
+\tName      string        \`json:"name"\`
+\tEmail     string        \`json:"email"\`
+\tRole      string        \`json:"role"\`
+\tStatus    domain.Status \`json:"status"\`
+\tCreatedAt string        \`json:"created_at"\`
+\tUpdatedAt string        \`json:"updated_at"\`
+}
+
+type UserList struct {
+\tItems []User \`json:"items"\`
+}
+
+func UserFromDomain(entity domain.User) User {
+\treturn User{
+\t\tID:        entity.ID,
+\t\tName:      entity.Name,
+\t\tEmail:     entity.Email,
+\t\tRole:      entity.Role,
+\t\tStatus:    entity.Status,
+\t\tCreatedAt: entity.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+\t\tUpdatedAt: entity.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+\t}
+}
+
+func UserListFromDomain(items []domain.User) UserList {
+\tresult := UserList{Items: make([]User, 0, len(items))}
+\tfor _, item := range items {
+\t\tresult.Items = append(result.Items, UserFromDomain(item))
+\t}
+\treturn result
+}
+`;
+}
+
+function backendCorsMiddleware() {
+  return `package middlewares
+
+import "net/http"
+
+func CORS(next http.Handler) http.Handler {
+\treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+\t\tw.Header().Set("Access-Control-Allow-Origin", "*")
+\t\tw.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
+\t\tw.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Trace-ID")
+\t\tw.Header().Set("Access-Control-Expose-Headers", "X-Trace-ID")
+\t\tif r.Method == http.MethodOptions {
+\t\t\tw.WriteHeader(http.StatusNoContent)
+\t\t\treturn
+\t\t}
+\t\tnext.ServeHTTP(w, r)
+\t})
+}
+`;
+}
+
+function backendTraceMiddleware() {
+  return `package middlewares
+
+import (
+\t"context"
+\t"crypto/rand"
+\t"encoding/hex"
+\t"net/http"
+)
+
+type traceIDKey struct{}
+
+func Trace(next http.Handler) http.Handler {
+\treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+\t\ttraceID := r.Header.Get("X-Trace-ID")
+\t\tif traceID == "" {
+\t\t\ttraceID = newTraceID()
+\t\t}
+\t\tw.Header().Set("X-Trace-ID", traceID)
+\t\tctx := context.WithValue(r.Context(), traceIDKey{}, traceID)
+\t\tnext.ServeHTTP(w, r.WithContext(ctx))
+\t})
+}
+
+func GetTraceID(ctx context.Context) string {
+\tif value, ok := ctx.Value(traceIDKey{}).(string); ok {
+\t\treturn value
+\t}
+\treturn ""
+}
+
+func newTraceID() string {
+\tbuf := make([]byte, 8)
+\tif _, err := rand.Read(buf); err != nil {
+\t\treturn "trace-fallback"
+\t}
+\treturn hex.EncodeToString(buf)
+}
+`;
+}
+
+function backendRequestLogMiddleware(ctx) {
+  const mod = moduleName(ctx.projectName);
+  return `package middlewares
+
+import (
+\t"net/http"
+\t"strconv"
+\t"time"
+
+\t"${mod}/backend/internal/infrastructure/support/logger"
+)
+
+type statusRecorder struct {
+\thttp.ResponseWriter
+\tstatus int
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+\tr.status = status
+\tr.ResponseWriter.WriteHeader(status)
+}
+
+func RequestLog(log logger.Contract) func(http.Handler) http.Handler {
+\treturn func(next http.Handler) http.Handler {
+\t\treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+\t\t\tstartedAt := time.Now()
+\t\t\trecorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+\t\t\tnext.ServeHTTP(recorder, r)
+\t\t\tlog.Info(r.Context(), "request completed", map[string]string{
+\t\t\t\t"trace_id": GetTraceID(r.Context()),
+\t\t\t\t"method":   r.Method,
+\t\t\t\t"path":     r.URL.Path,
+\t\t\t\t"status":   strconv.Itoa(recorder.status),
+\t\t\t\t"latency":  time.Since(startedAt).String(),
+\t\t\t})
+\t\t})
+\t}
+}
+`;
+}
+
+function backendRecoveryMiddleware(ctx) {
+  const mod = moduleName(ctx.projectName);
+  return `package middlewares
+
+import (
+\t"net/http"
+\t"runtime/debug"
+
+\t"${mod}/backend/internal/infrastructure/support/logger"
+)
+
+func Recovery(log logger.Contract) func(http.Handler) http.Handler {
+\treturn func(next http.Handler) http.Handler {
+\t\treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+\t\t\tdefer func() {
+\t\t\t\tif err := recover(); err != nil {
+\t\t\t\t\tlog.Error(r.Context(), "panic recovered", map[string]string{
+\t\t\t\t\t\t"trace_id": GetTraceID(r.Context()),
+\t\t\t\t\t\t"stack":    string(debug.Stack()),
+\t\t\t\t\t})
+\t\t\t\t\thttp.Error(w, "internal server error", http.StatusInternalServerError)
+\t\t\t\t}
+\t\t\t}()
+\t\t\tnext.ServeHTTP(w, r)
+\t\t})
+\t}
+}
+`;
+}
+
+function backendRouter(ctx) {
+  const mod = moduleName(ctx.projectName);
+  return `package router
+
+import (
+\t"net/http"
+
+\t"${mod}/backend/internal/infrastructure/support/logger"
+\t"${mod}/backend/internal/interface/rest/controllers"
+\t"${mod}/backend/internal/interface/rest/middlewares"
+\t"${mod}/backend/internal/interface/rest/router/routes"
+)
+
+type Controllers struct {
+\tUsers *controllers.UserHandler
+}
+
+func SetupRouter(ctrl Controllers, log logger.Contract) http.Handler {
+\tmux := http.NewServeMux()
+\tmux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
+\t\tw.Header().Set("Content-Type", "application/json; charset=utf-8")
+\t\t_, _ = w.Write([]byte(\`{"code":200,"message":"ok","data":{"service":"demo-backend"}}\`))
+\t})
+\troutes.RegisterUserRoutes(mux, ctrl.Users)
+
+\tvar handler http.Handler = mux
+\thandler = middlewares.Recovery(log)(handler)
+\thandler = middlewares.RequestLog(log)(handler)
+\thandler = middlewares.Trace(handler)
+\thandler = middlewares.CORS(handler)
+\treturn handler
+}
+`;
+}
+
+function backendUserRoutes(ctx) {
+  const mod = moduleName(ctx.projectName);
+  return `package routes
+
+import (
+\t"net/http"
+
+\t"${mod}/backend/internal/interface/rest/controllers"
+)
+
+func RegisterUserRoutes(mux *http.ServeMux, users *controllers.UserHandler) {
+\tmux.HandleFunc("GET /api/v1/users", users.List)
+\tmux.HandleFunc("POST /api/v1/users", users.Create)
+\tmux.HandleFunc("GET /api/v1/users/{id}", users.Get)
+\tmux.HandleFunc("PUT /api/v1/users/{id}", users.Update)
+\tmux.HandleFunc("DELETE /api/v1/users/{id}", users.Delete)
 }
 `;
 }
@@ -1477,49 +1755,121 @@ function backendWireApp(ctx) {
 import (
 \t"net/http"
 
-\tnotificationmem "${mod}/backend/internal/infrastructure/gateways/notification/memory"
-\trepositorymem "${mod}/backend/internal/infrastructure/gateways/persistence/memory/repository"
-\tqueuemem "${mod}/backend/internal/infrastructure/gateways/queue/memory"
-\tcachemem "${mod}/backend/internal/infrastructure/support/cache/memory"
-\tloggermem "${mod}/backend/internal/infrastructure/support/logger/std"
-\t"${mod}/backend/internal/interface/rest"
-\tuseruc "${mod}/backend/internal/usecase/user"
+\t"${mod}/backend/internal/interface/rest/router"
 )
 
 type App struct {
-\tRouter http.Handler
+\tInfrastructure *Infrastructure
+\tRepositories   *Repositories
+\tUseCases       *UseCases
+\tControllers    *Controllers
+\tRouter         http.Handler
 }
 
 func NewApp() *App {
-\tmux := http.NewServeMux()
-\tlogger := loggermem.NewLogger()
-\tcache := cachemem.NewCache()
-\teventBus := queuemem.NewEventBus()
-\tnotifier := notificationmem.NewNotifier(logger)
-\tuserRepository := repositorymem.NewUserRepository()
-\tuserService := useruc.NewService(userRepository, cache, eventBus, notifier, logger)
-\tuserHandler := rest.NewUserHandler(userService)
-
-\tmux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
-\t\tw.Header().Set("Content-Type", "application/json; charset=utf-8")
-\t\t_, _ = w.Write([]byte(\`{"code":200,"message":"ok","data":{"service":"demo-backend"}}\`))
-\t})
-\tuserHandler.Register(mux)
-
-\treturn &App{Router: withCORS(mux)}
+\tinfra := InitInfrastructure()
+\trepos := InitRepositories()
+\tuseCases := InitUseCases(repos, infra)
+\tcontrollers := InitControllers(useCases)
+\thandler := router.SetupRouter(router.Controllers{Users: controllers.Users}, infra.Logger)
+\treturn &App{
+\t\tInfrastructure: infra,
+\t\tRepositories:   repos,
+\t\tUseCases:       useCases,
+\t\tControllers:    controllers,
+\t\tRouter:         handler,
+\t}
+}
+`;
 }
 
-func withCORS(next http.Handler) http.Handler {
-\treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-\t\tw.Header().Set("Access-Control-Allow-Origin", "*")
-\t\tw.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
-\t\tw.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-\t\tif r.Method == http.MethodOptions {
-\t\t\tw.WriteHeader(http.StatusNoContent)
-\t\t\treturn
-\t\t}
-\t\tnext.ServeHTTP(w, r)
-\t})
+function backendWireInfrastructure(ctx) {
+  const mod = moduleName(ctx.projectName);
+  return `package wire
+
+import (
+\tnotificationmem "${mod}/backend/internal/infrastructure/gateways/notification/memory"
+\tqueuemem "${mod}/backend/internal/infrastructure/gateways/queue/memory"
+\t"${mod}/backend/internal/infrastructure/gateways/notification"
+\t"${mod}/backend/internal/infrastructure/gateways/queue"
+\t"${mod}/backend/internal/infrastructure/support/cache"
+\tcachemem "${mod}/backend/internal/infrastructure/support/cache/memory"
+\t"${mod}/backend/internal/infrastructure/support/logger"
+\tloggermem "${mod}/backend/internal/infrastructure/support/logger/std"
+)
+
+type Infrastructure struct {
+\tLogger       logger.Contract
+\tCache        cache.Contract
+\tEventBus     queue.Contract
+\tNotification notification.Contract
+}
+
+func InitInfrastructure() *Infrastructure {
+\tlog := loggermem.NewLogger()
+\treturn &Infrastructure{
+\t\tLogger:       log,
+\t\tCache:        cachemem.NewCache(),
+\t\tEventBus:     queuemem.NewEventBus(),
+\t\tNotification: notificationmem.NewNotifier(log),
+\t}
+}
+`;
+}
+
+function backendWireRepositories(ctx) {
+  const mod = moduleName(ctx.projectName);
+  return `package wire
+
+import (
+\tdomain "${mod}/backend/internal/domain/user"
+\trepositorymem "${mod}/backend/internal/infrastructure/gateways/persistence/memory/repository"
+)
+
+type Repositories struct {
+\tUsers domain.Repository
+}
+
+func InitRepositories() *Repositories {
+\treturn &Repositories{
+\t\tUsers: repositorymem.NewUserRepository(),
+\t}
+}
+`;
+}
+
+function backendWireUsecases(ctx) {
+  const mod = moduleName(ctx.projectName);
+  return `package wire
+
+import useruc "${mod}/backend/internal/usecase/user"
+
+type UseCases struct {
+\tUsers *useruc.Service
+}
+
+func InitUseCases(repos *Repositories, infra *Infrastructure) *UseCases {
+\treturn &UseCases{
+\t\tUsers: useruc.NewService(repos.Users, infra.Cache, infra.EventBus, infra.Notification, infra.Logger),
+\t}
+}
+`;
+}
+
+function backendWireControllers(ctx) {
+  const mod = moduleName(ctx.projectName);
+  return `package wire
+
+import "${mod}/backend/internal/interface/rest/controllers"
+
+type Controllers struct {
+\tUsers *controllers.UserHandler
+}
+
+func InitControllers(useCases *UseCases) *Controllers {
+\treturn &Controllers{
+\t\tUsers: controllers.NewUserHandler(useCases.Users),
+\t}
 }
 `;
 }
@@ -2110,7 +2460,7 @@ function userBusinessFlowDoc() {
 1. 管理员在 \`front/admin/web/src/views/users/UserManagement.vue\` 填写用户表单。
 2. 页面调用 \`src/store/userStore.ts\` 的 \`create(...)\` action。
 3. Store 调用 \`src/api/users.ts#createUser\` 发起 \`POST /api/v1/users\`。
-4. 后端 \`internal/interface/rest.UserHandler\` 绑定请求并调用用例层。
+4. 后端请求先经过 \`internal/interface/rest/middlewares\`，再由 \`router/routes\` 分发到 \`controllers.UserHandler\`。
 5. \`internal/usecase/user.Service\` 创建领域实体并调用仓储。
 6. \`internal/infrastructure/gateways/persistence/memory/repository.UserRepository\` 保存用户并返回结果。
 7. 用例层清理 \`support/cache\` 中的用户列表缓存，并通过 \`gateways/queue\` 记录领域事件。
