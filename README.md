@@ -11,6 +11,7 @@ The generated project keeps the architecture documentation style from VOMS:
 - ops boundaries for deploy, recovery, and cloud publishing
 - runnable Go backend user CRUD API: `GET/POST/PUT/DELETE /api/v1/users`
 - VOMS-style infrastructure split: `gateways/persistence`, `gateways/notification`, `gateways/queue`, `support/cache`, and `support/logger`
+- runnable observability demo: in-memory OTel-style spans, layer tracing, and `/api/v1/observability/spans`
 - admin Web user management page, API client, Pinia store, and route
 - API, data model, and business-flow documentation for the CRUD slice
 

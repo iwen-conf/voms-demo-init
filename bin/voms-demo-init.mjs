@@ -105,6 +105,7 @@ This creates a VOMS-style architecture demo with a user CRUD vertical slice:
   backend/internal/infrastructure/gateways/queue/memory Domain event gateway
   backend/internal/infrastructure/support/cache/memory Read model cache
   backend/internal/infrastructure/support/logger/std Structured logger
+  backend/internal/infrastructure/support/otel In-memory layer tracing
   front/admin/web/          Admin Web boundary
   front/admin/web/src/api/users.ts
   front/admin/web/src/store/userStore.ts
@@ -164,6 +165,7 @@ async function writeProject(root, ctx) {
     "backend/internal/infrastructure/support/cache/memory",
     "backend/internal/infrastructure/support/logger",
     "backend/internal/infrastructure/support/logger/std",
+    "backend/internal/infrastructure/support/otel",
     "backend/internal/wire",
     "backend/migrations/up",
     "front/admin/web/src/api",
@@ -237,7 +239,7 @@ function buildFiles(ctx) {
     "backend/internal/interface/rest/middlewares/cors.go": backendCorsMiddleware(ctx),
     "backend/internal/interface/rest/middlewares/recovery.go": backendRecoveryMiddleware(ctx),
     "backend/internal/interface/rest/middlewares/request_log.go": backendRequestLogMiddleware(ctx),
-    "backend/internal/interface/rest/middlewares/trace.go": backendTraceMiddleware(),
+    "backend/internal/interface/rest/middlewares/trace.go": backendTraceMiddleware(ctx),
     "backend/internal/interface/rest/router/router.go": backendRouter(ctx),
     "backend/internal/interface/rest/router/routes/users.go": backendUserRoutes(ctx),
     "backend/internal/infrastructure/README.md": layerReadme("基础设施层", "数据库、缓存、消息、文件、外部服务和可观测实现。"),
@@ -253,6 +255,8 @@ function buildFiles(ctx) {
     "backend/internal/infrastructure/support/cache/memory/cache.go": backendMemoryCache(),
     "backend/internal/infrastructure/support/logger/contract.go": backendLoggerContract(),
     "backend/internal/infrastructure/support/logger/std/logger.go": backendStdLogger(),
+    "backend/internal/infrastructure/support/otel/tracer.go": backendOtelTracer(),
+    "backend/internal/infrastructure/support/otel/layers.go": backendOtelLayers(),
     "backend/internal/wire/README.md": layerReadme("组装层", "依赖注入、生命周期管理和应用装配。"),
     "backend/internal/wire/app.go": backendWireApp(ctx),
     "backend/internal/wire/infrastructure.go": backendWireInfrastructure(ctx),
@@ -656,12 +660,12 @@ function backendCodemap() {
 - \`internal/usecase/\`: 应用服务和事务边界。
 - \`internal/interface/\`: 协议适配。
 - \`internal/infrastructure/gateways/\`: 持久化、通知、队列、对象存储、第三方 API 等外部能力适配。
-- \`internal/infrastructure/support/\`: 缓存、日志、鉴权、可观测、会话等跨业务技术支撑。
+- \`internal/infrastructure/support/\`: 缓存、日志、OTel 风格埋点、鉴权、会话等跨业务技术支撑。
 - \`internal/wire/\`: 依赖组装。
 
 ## Flow
 
-用户 CRUD 请求先经过 \`interface/rest/middlewares\`，再由 \`interface/rest/router/routes\` 分发到 \`controllers.UserHandler\`。Handler 调用 \`internal/usecase/user.Service\`，Service 围绕 \`internal/domain/user.User\` 执行业务规则，并通过 \`gateways/persistence\` 完成持久化，通过 \`support/cache\` 缓存列表读模型，通过 \`gateways/queue\` 发布领域事件，通过 \`gateways/notification\` 触发通知。依赖由 \`internal/wire\` 分层装配。
+用户 CRUD 请求先经过 \`interface/rest/middlewares\`，再由 \`interface/rest/router/routes\` 分发到 \`controllers.UserHandler\`。Handler 调用 \`internal/usecase/user.Service\`，Service 围绕 \`internal/domain/user.User\` 执行业务规则，并通过 \`gateways/persistence\` 完成持久化，通过 \`support/cache\` 缓存列表读模型，通过 \`gateways/queue\` 发布领域事件，通过 \`gateways/notification\` 触发通知。HTTP、usecase、repository 会写入 \`support/otel\` 的内存 span，可通过 \`/api/v1/observability/spans\` 查看。依赖由 \`internal/wire\` 分层装配。
 `;
 }
 
@@ -925,6 +929,7 @@ import (
 \t"${mod}/backend/internal/infrastructure/gateways/queue"
 \t"${mod}/backend/internal/infrastructure/support/cache"
 \t"${mod}/backend/internal/infrastructure/support/logger"
+\t"${mod}/backend/internal/infrastructure/support/otel"
 )
 
 type Service struct {
@@ -933,6 +938,7 @@ type Service struct {
 \tevents     queue.Contract
 \tnotifier   notification.Contract
 \tlogger     logger.Contract
+\ttracer     *otel.Tracer
 \tnow        func() time.Time
 }
 
@@ -942,6 +948,7 @@ func NewService(
 \tevents queue.Contract,
 \tnotifier notification.Contract,
 \tlogger logger.Contract,
+\ttracer *otel.Tracer,
 ) *Service {
 \treturn &Service{
 \t\trepository: repository,
@@ -949,11 +956,16 @@ func NewService(
 \t\tevents:     events,
 \t\tnotifier:   notifier,
 \t\tlogger:     logger,
+\t\ttracer:     tracer,
 \t\tnow:        time.Now,
 \t}
 }
 
 func (s *Service) Create(ctx context.Context, input domain.CreateInput) (domain.User, error) {
+\tctx, end := s.tracer.Start(ctx, otel.LayerUseCase, "user.create", map[string]string{"email": input.Email})
+\tvar err error
+\tdefer func() { end(err) }()
+
 \tid, err := s.repository.NextID(ctx)
 \tif err != nil {
 \t\treturn domain.User{}, err
@@ -972,6 +984,10 @@ func (s *Service) Create(ctx context.Context, input domain.CreateInput) (domain.
 }
 
 func (s *Service) List(ctx context.Context) ([]domain.User, error) {
+\tctx, end := s.tracer.Start(ctx, otel.LayerUseCase, "user.list", nil)
+\tvar err error
+\tdefer func() { end(err) }()
+
 \tconst key = "users:list"
 \tif cached, ok := s.cache.Get(ctx, key); ok {
 \t\tvar items []domain.User
@@ -992,10 +1008,17 @@ func (s *Service) List(ctx context.Context) ([]domain.User, error) {
 }
 
 func (s *Service) Get(ctx context.Context, id string) (domain.User, error) {
-\treturn s.repository.FindByID(ctx, id)
+\tctx, end := s.tracer.Start(ctx, otel.LayerUseCase, "user.get", map[string]string{"user_id": id})
+\tentity, err := s.repository.FindByID(ctx, id)
+\tend(err)
+\treturn entity, err
 }
 
 func (s *Service) Update(ctx context.Context, id string, input domain.UpdateInput) (domain.User, error) {
+\tctx, end := s.tracer.Start(ctx, otel.LayerUseCase, "user.update", map[string]string{"user_id": id})
+\tvar err error
+\tdefer func() { end(err) }()
+
 \tcurrent, err := s.repository.FindByID(ctx, id)
 \tif err != nil {
 \t\treturn domain.User{}, err
@@ -1014,6 +1037,10 @@ func (s *Service) Update(ctx context.Context, id string, input domain.UpdateInpu
 }
 
 func (s *Service) Delete(ctx context.Context, id string) error {
+\tctx, end := s.tracer.Start(ctx, otel.LayerUseCase, "user.delete", map[string]string{"user_id": id})
+\tvar err error
+\tdefer func() { end(err) }()
+
 \tif err := s.repository.Delete(ctx, id); err != nil {
 \t\treturn err
 \t}
@@ -1255,7 +1282,8 @@ func CORS(next http.Handler) http.Handler {
 `;
 }
 
-function backendTraceMiddleware() {
+function backendTraceMiddleware(ctx) {
+  const mod = moduleName(ctx.projectName);
   return `package middlewares
 
 import (
@@ -1263,11 +1291,14 @@ import (
 \t"crypto/rand"
 \t"encoding/hex"
 \t"net/http"
+
+\t"${mod}/backend/internal/infrastructure/support/otel"
 )
 
 type traceIDKey struct{}
 
-func Trace(next http.Handler) http.Handler {
+func Trace(tracer *otel.Tracer) func(http.Handler) http.Handler {
+\treturn func(next http.Handler) http.Handler {
 \treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 \t\ttraceID := r.Header.Get("X-Trace-ID")
 \t\tif traceID == "" {
@@ -1275,8 +1306,14 @@ func Trace(next http.Handler) http.Handler {
 \t\t}
 \t\tw.Header().Set("X-Trace-ID", traceID)
 \t\tctx := context.WithValue(r.Context(), traceIDKey{}, traceID)
+\t\tctx, end := tracer.Start(ctx, otel.LayerHTTP, r.Method+" "+r.URL.Path, map[string]string{
+\t\t\t"method": r.Method,
+\t\t\t"path":   r.URL.Path,
+\t\t})
+\t\tdefer end(nil)
 \t\tnext.ServeHTTP(w, r.WithContext(ctx))
 \t})
+\t}
 }
 
 func GetTraceID(ctx context.Context) string {
@@ -1372,9 +1409,11 @@ function backendRouter(ctx) {
   return `package router
 
 import (
+\t"encoding/json"
 \t"net/http"
 
 \t"${mod}/backend/internal/infrastructure/support/logger"
+\t"${mod}/backend/internal/infrastructure/support/otel"
 \t"${mod}/backend/internal/interface/rest/controllers"
 \t"${mod}/backend/internal/interface/rest/middlewares"
 \t"${mod}/backend/internal/interface/rest/router/routes"
@@ -1384,18 +1423,28 @@ type Controllers struct {
 \tUsers *controllers.UserHandler
 }
 
-func SetupRouter(ctrl Controllers, log logger.Contract) http.Handler {
+func SetupRouter(ctrl Controllers, log logger.Contract, tracer *otel.Tracer) http.Handler {
 \tmux := http.NewServeMux()
 \tmux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
 \t\tw.Header().Set("Content-Type", "application/json; charset=utf-8")
 \t\t_, _ = w.Write([]byte(\`{"code":200,"message":"ok","data":{"service":"demo-backend"}}\`))
+\t})
+\tmux.HandleFunc("GET /api/v1/observability/spans", func(w http.ResponseWriter, r *http.Request) {
+\t\tw.Header().Set("Content-Type", "application/json; charset=utf-8")
+\t\t_ = json.NewEncoder(w).Encode(map[string]interface{}{
+\t\t\t"code":    200,
+\t\t\t"message": "ok",
+\t\t\t"data": map[string]interface{}{
+\t\t\t\t"spans": tracer.Snapshot(),
+\t\t\t},
+\t\t})
 \t})
 \troutes.RegisterUserRoutes(mux, ctrl.Users)
 
 \tvar handler http.Handler = mux
 \thandler = middlewares.Recovery(log)(handler)
 \thandler = middlewares.RequestLog(log)(handler)
-\thandler = middlewares.Trace(handler)
+\thandler = middlewares.Trace(tracer)(handler)
 \thandler = middlewares.CORS(handler)
 \treturn handler
 }
@@ -1434,38 +1483,50 @@ import (
 \t"sync"
 
 \tdomain "${mod}/backend/internal/domain/user"
+\t"${mod}/backend/internal/infrastructure/support/otel"
 )
 
 type UserRepository struct {
 \tmu       sync.RWMutex
 \tsequence int
 \titems    map[string]domain.User
+\ttracer   *otel.Tracer
 }
 
-func NewUserRepository() *UserRepository {
+func NewUserRepository(tracer *otel.Tracer) *UserRepository {
 \treturn &UserRepository{
 \t\titems: make(map[string]domain.User),
+\t\ttracer: tracer,
 \t}
 }
 
-func (r *UserRepository) NextID(context.Context) (string, error) {
+func (r *UserRepository) NextID(ctx context.Context) (string, error) {
+\t_, end := r.tracer.Start(ctx, otel.LayerRepository, "user.next_id", nil)
+\tdefer end(nil)
 \tr.mu.Lock()
 \tdefer r.mu.Unlock()
 \tr.sequence += 1
 \treturn fmt.Sprintf("usr_%04d", r.sequence), nil
 }
 
-func (r *UserRepository) Create(_ context.Context, entity domain.User) (domain.User, error) {
+func (r *UserRepository) Create(ctx context.Context, entity domain.User) (domain.User, error) {
+\t_, end := r.tracer.Start(ctx, otel.LayerRepository, "user.create", map[string]string{"user_id": entity.ID})
+\tvar err error
+\tdefer func() { end(err) }()
+
 \tr.mu.Lock()
 \tdefer r.mu.Unlock()
 \tif r.emailExists(entity.Email, entity.ID) {
-\t\treturn domain.User{}, domain.ErrEmailConflicts
+\t\terr = domain.ErrEmailConflicts
+\t\treturn domain.User{}, err
 \t}
 \tr.items[entity.ID] = entity
 \treturn entity, nil
 }
 
-func (r *UserRepository) List(context.Context) ([]domain.User, error) {
+func (r *UserRepository) List(ctx context.Context) ([]domain.User, error) {
+\t_, end := r.tracer.Start(ctx, otel.LayerRepository, "user.list", nil)
+\tdefer end(nil)
 \tr.mu.RLock()
 \tdefer r.mu.RUnlock()
 
@@ -1479,34 +1540,50 @@ func (r *UserRepository) List(context.Context) ([]domain.User, error) {
 \treturn items, nil
 }
 
-func (r *UserRepository) FindByID(_ context.Context, id string) (domain.User, error) {
+func (r *UserRepository) FindByID(ctx context.Context, id string) (domain.User, error) {
+\t_, end := r.tracer.Start(ctx, otel.LayerRepository, "user.find_by_id", map[string]string{"user_id": id})
+\tvar err error
+\tdefer func() { end(err) }()
+
 \tr.mu.RLock()
 \tdefer r.mu.RUnlock()
 \titem, ok := r.items[id]
 \tif !ok {
-\t\treturn domain.User{}, domain.ErrNotFound
+\t\terr = domain.ErrNotFound
+\t\treturn domain.User{}, err
 \t}
 \treturn item, nil
 }
 
-func (r *UserRepository) Update(_ context.Context, entity domain.User) (domain.User, error) {
+func (r *UserRepository) Update(ctx context.Context, entity domain.User) (domain.User, error) {
+\t_, end := r.tracer.Start(ctx, otel.LayerRepository, "user.update", map[string]string{"user_id": entity.ID})
+\tvar err error
+\tdefer func() { end(err) }()
+
 \tr.mu.Lock()
 \tdefer r.mu.Unlock()
 \tif _, ok := r.items[entity.ID]; !ok {
-\t\treturn domain.User{}, domain.ErrNotFound
+\t\terr = domain.ErrNotFound
+\t\treturn domain.User{}, err
 \t}
 \tif r.emailExists(entity.Email, entity.ID) {
-\t\treturn domain.User{}, domain.ErrEmailConflicts
+\t\terr = domain.ErrEmailConflicts
+\t\treturn domain.User{}, err
 \t}
 \tr.items[entity.ID] = entity
 \treturn entity, nil
 }
 
-func (r *UserRepository) Delete(_ context.Context, id string) error {
+func (r *UserRepository) Delete(ctx context.Context, id string) error {
+\t_, end := r.tracer.Start(ctx, otel.LayerRepository, "user.delete", map[string]string{"user_id": id})
+\tvar err error
+\tdefer func() { end(err) }()
+
 \tr.mu.Lock()
 \tdefer r.mu.Unlock()
 \tif _, ok := r.items[id]; !ok {
-\t\treturn domain.ErrNotFound
+\t\terr = domain.ErrNotFound
+\t\treturn err
 \t}
 \tdelete(r.items, id)
 \treturn nil
@@ -1748,6 +1825,139 @@ func (l *Logger) write(level string, message string, fields map[string]string) {
 `;
 }
 
+function backendOtelLayers() {
+  return `package otel
+
+const (
+\tLayerHTTP       = "http"
+\tLayerController = "controller"
+\tLayerUseCase    = "usecase"
+\tLayerRepository = "repository"
+\tLayerGateway    = "gateway"
+\tLayerSupport    = "support"
+)
+`;
+}
+
+function backendOtelTracer() {
+  return `package otel
+
+import (
+\t"context"
+\t"crypto/rand"
+\t"encoding/hex"
+\t"sort"
+\t"sync"
+\t"time"
+)
+
+type spanKey struct{}
+
+type Span struct {
+\tTraceID   string            \`json:"trace_id"\`
+\tSpanID    string            \`json:"span_id"\`
+\tParentID  string            \`json:"parent_id,omitempty"\`
+\tLayer     string            \`json:"layer"\`
+\tName      string            \`json:"name"\`
+\tStartedAt time.Time         \`json:"started_at"\`
+\tEndedAt   time.Time         \`json:"ended_at"\`
+\tDuration  string            \`json:"duration"\`
+\tStatus    string            \`json:"status"\`
+\tError     string            \`json:"error,omitempty"\`
+\tAttrs     map[string]string \`json:"attrs,omitempty"\`
+}
+
+type Tracer struct {
+\tmu    sync.RWMutex
+\tspans []Span
+}
+
+func NewTracer() *Tracer {
+\treturn &Tracer{}
+}
+
+func (t *Tracer) Start(ctx context.Context, layer string, name string, attrs map[string]string) (context.Context, func(error)) {
+\tparent, _ := ctx.Value(spanKey{}).(Span)
+\ttraceID := parent.TraceID
+\tif traceID == "" {
+\t\ttraceID = newID(16)
+\t}
+\tspan := Span{
+\t\tTraceID:   traceID,
+\t\tSpanID:    newID(8),
+\t\tParentID:  parent.SpanID,
+\t\tLayer:     layer,
+\t\tName:      name,
+\t\tStartedAt: time.Now().UTC(),
+\t\tStatus:    "ok",
+\t\tAttrs:     copyAttrs(attrs),
+\t}
+\tctx = context.WithValue(ctx, spanKey{}, span)
+\treturn ctx, func(err error) {
+\t\tspan.EndedAt = time.Now().UTC()
+\t\tspan.Duration = span.EndedAt.Sub(span.StartedAt).String()
+\t\tif err != nil {
+\t\t\tspan.Status = "error"
+\t\t\tspan.Error = err.Error()
+\t\t}
+\t\tt.record(span)
+\t}
+}
+
+func (t *Tracer) RecordError(ctx context.Context, err error) {
+\tif err == nil {
+\t\treturn
+\t}
+\t_, end := t.Start(ctx, LayerSupport, "error.record", nil)
+\tend(err)
+}
+
+func (t *Tracer) Snapshot() []Span {
+\tt.mu.RLock()
+\tdefer t.mu.RUnlock()
+\titems := make([]Span, len(t.spans))
+\tcopy(items, t.spans)
+\tsort.SliceStable(items, func(i, j int) bool {
+\t\treturn items[i].StartedAt.Before(items[j].StartedAt)
+\t})
+\treturn items
+}
+
+func (t *Tracer) record(span Span) {
+\tt.mu.Lock()
+\tdefer t.mu.Unlock()
+\tt.spans = append(t.spans, span)
+\tif len(t.spans) > 200 {
+\t\tt.spans = append([]Span(nil), t.spans[len(t.spans)-200:]...)
+\t}
+}
+
+func TraceIDFromContext(ctx context.Context) string {
+\tspan, _ := ctx.Value(spanKey{}).(Span)
+\treturn span.TraceID
+}
+
+func newID(size int) string {
+\tbuf := make([]byte, size)
+\tif _, err := rand.Read(buf); err != nil {
+\t\treturn time.Now().UTC().Format("20060102150405.000000000")
+\t}
+\treturn hex.EncodeToString(buf)
+}
+
+func copyAttrs(attrs map[string]string) map[string]string {
+\tif len(attrs) == 0 {
+\t\treturn nil
+\t}
+\tcopy := make(map[string]string, len(attrs))
+\tfor key, value := range attrs {
+\t\tcopy[key] = value
+\t}
+\treturn copy
+}
+`;
+}
+
 function backendWireApp(ctx) {
   const mod = moduleName(ctx.projectName);
   return `package wire
@@ -1768,10 +1978,10 @@ type App struct {
 
 func NewApp() *App {
 \tinfra := InitInfrastructure()
-\trepos := InitRepositories()
+\trepos := InitRepositories(infra)
 \tuseCases := InitUseCases(repos, infra)
 \tcontrollers := InitControllers(useCases)
-\thandler := router.SetupRouter(router.Controllers{Users: controllers.Users}, infra.Logger)
+\thandler := router.SetupRouter(router.Controllers{Users: controllers.Users}, infra.Logger, infra.Tracer)
 \treturn &App{
 \t\tInfrastructure: infra,
 \t\tRepositories:   repos,
@@ -1796,6 +2006,7 @@ import (
 \tcachemem "${mod}/backend/internal/infrastructure/support/cache/memory"
 \t"${mod}/backend/internal/infrastructure/support/logger"
 \tloggermem "${mod}/backend/internal/infrastructure/support/logger/std"
+\t"${mod}/backend/internal/infrastructure/support/otel"
 )
 
 type Infrastructure struct {
@@ -1803,15 +2014,18 @@ type Infrastructure struct {
 \tCache        cache.Contract
 \tEventBus     queue.Contract
 \tNotification notification.Contract
+\tTracer       *otel.Tracer
 }
 
 func InitInfrastructure() *Infrastructure {
 \tlog := loggermem.NewLogger()
+\ttracer := otel.NewTracer()
 \treturn &Infrastructure{
 \t\tLogger:       log,
 \t\tCache:        cachemem.NewCache(),
 \t\tEventBus:     queuemem.NewEventBus(),
 \t\tNotification: notificationmem.NewNotifier(log),
+\t\tTracer:       tracer,
 \t}
 }
 `;
@@ -1830,9 +2044,9 @@ type Repositories struct {
 \tUsers domain.Repository
 }
 
-func InitRepositories() *Repositories {
+func InitRepositories(infra *Infrastructure) *Repositories {
 \treturn &Repositories{
-\t\tUsers: repositorymem.NewUserRepository(),
+\t\tUsers: repositorymem.NewUserRepository(infra.Tracer),
 \t}
 }
 `;
@@ -1850,7 +2064,7 @@ type UseCases struct {
 
 func InitUseCases(repos *Repositories, infra *Infrastructure) *UseCases {
 \treturn &UseCases{
-\t\tUsers: useruc.NewService(repos.Users, infra.Cache, infra.EventBus, infra.Notification, infra.Logger),
+\t\tUsers: useruc.NewService(repos.Users, infra.Cache, infra.EventBus, infra.Notification, infra.Logger, infra.Tracer),
 \t}
 }
 `;
@@ -2564,6 +2778,7 @@ DELETE /api/v1/users/usr_0001
 \`\`\`bash
 make dev-backend
 make verify-user-crud
+curl http://127.0.0.1:8080/api/v1/observability/spans
 \`\`\`
 `;
 }
