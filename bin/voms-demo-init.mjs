@@ -800,10 +800,13 @@ import (
 type Status string
 
 const (
+\t// StatusActive 表示用户可以正常登录和使用业务功能。
 \tStatusActive   Status = "active"
+\t// StatusDisabled 表示用户已被停用，真实项目中通常会被鉴权层拦截。
 \tStatusDisabled Status = "disabled"
 )
 
+// User 是领域实体，只表达业务含义，不绑定 HTTP、数据库或前端字段。
 type User struct {
 \tID        string    \`json:"id"\`
 \tName      string    \`json:"name"\`
@@ -828,6 +831,7 @@ type UpdateInput struct {
 \tStatus Status \`json:"status"\`
 }
 
+// NewUser 负责创建用户实体，并在领域层完成基础业务校验。
 func NewUser(id string, input CreateInput, now time.Time) (User, error) {
 \tinput = normalizeCreateInput(input)
 \tif err := validate(input.Name, input.Email, input.Role, input.Status); err != nil {
@@ -845,6 +849,7 @@ func NewUser(id string, input CreateInput, now time.Time) (User, error) {
 \t}, nil
 }
 
+// Apply 在已有实体上应用更新，保持领域规则集中在实体附近。
 func (u User) Apply(input UpdateInput, now time.Time) (User, error) {
 \tinput = normalizeUpdateInput(input)
 \tif err := validate(input.Name, input.Email, input.Role, input.Status); err != nil {
@@ -900,10 +905,13 @@ import (
 )
 
 var (
+\t// ErrNotFound 表示仓储中不存在目标用户。
 \tErrNotFound       = errors.New("user not found")
+\t// ErrEmailConflicts 表示邮箱唯一性约束冲突。
 \tErrEmailConflicts = errors.New("email already exists")
 )
 
+// Repository 是领域层定义的仓储契约，具体存储实现放在 infrastructure/gateways。
 type Repository interface {
 \tCreate(ctx context.Context, user User) (User, error)
 \tList(ctx context.Context) ([]User, error)
@@ -942,6 +950,8 @@ type Service struct {
 \tnow        func() time.Time
 }
 
+// NewService 装配用户用例所需依赖。
+// 用例层只依赖领域契约和基础设施抽象，不直接知道具体 HTTP 或存储细节。
 func NewService(
 \trepository domain.Repository,
 \tcache cache.Contract,
@@ -962,6 +972,7 @@ func NewService(
 }
 
 func (s *Service) Create(ctx context.Context, input domain.CreateInput) (domain.User, error) {
+\t// usecase span 用于观察业务编排耗时，便于和 controller/repository 分层对照。
 \tctx, end := s.tracer.Start(ctx, otel.LayerUseCase, "user.create", map[string]string{"email": input.Email})
 \tvar err error
 \tdefer func() { end(err) }()
@@ -984,6 +995,7 @@ func (s *Service) Create(ctx context.Context, input domain.CreateInput) (domain.
 }
 
 func (s *Service) List(ctx context.Context) ([]domain.User, error) {
+\t// 读路径先查缓存，写路径统一失效缓存，体现 support/cache 的位置。
 \tctx, end := s.tracer.Start(ctx, otel.LayerUseCase, "user.list", nil)
 \tvar err error
 \tdefer func() { end(err) }()
@@ -1051,6 +1063,7 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 }
 
 func (s *Service) afterUserChanged(ctx context.Context, subject string, entity domain.User) {
+\t// 写操作后的横切动作集中在这里：缓存失效、事件发布、通知和业务日志。
 \ts.cache.Delete(ctx, "users:list")
 \ts.events.Publish(ctx, queue.Event{Subject: subject, Payload: entity})
 \ts.notifier.Send(ctx, notification.Message{
@@ -1113,6 +1126,8 @@ type UserHandler struct {
 \tservice *useruc.Service
 }
 
+// NewUserHandler 创建用户控制器。
+// Controller 只负责 HTTP 协议适配，不承载业务规则。
 func NewUserHandler(service *useruc.Service) *UserHandler {
 \treturn &UserHandler{service: service}
 }
@@ -1127,6 +1142,7 @@ func (h *UserHandler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
+\t// DTO 负责请求字段到用例输入的转换，避免 HTTP 结构泄漏到领域层。
 \tvar input requests.UserPayload
 \tif err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 \t\twriteError(w, http.StatusBadRequest, "invalid json body")
@@ -1174,6 +1190,7 @@ func (h *UserHandler) Delete(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleUserError(w http.ResponseWriter, err error) {
+\t// 统一把领域错误翻译成 HTTP 状态码，避免每个 handler 重复判断。
 \tswitch {
 \tcase errors.Is(err, domain.ErrNotFound):
 \t\twriteError(w, http.StatusNotFound, err.Error())
@@ -1199,6 +1216,7 @@ type UserPayload struct {
 \tStatus domain.Status \`json:"status"\`
 }
 
+// ToCreateInput 将 HTTP 请求 DTO 转成用例输入。
 func (p UserPayload) ToCreateInput() domain.CreateInput {
 \treturn domain.CreateInput{
 \t\tName:   p.Name,
@@ -1208,6 +1226,7 @@ func (p UserPayload) ToCreateInput() domain.CreateInput {
 \t}
 }
 
+// ToUpdateInput 将 HTTP 请求 DTO 转成更新用例输入。
 func (p UserPayload) ToUpdateInput() domain.UpdateInput {
 \treturn domain.UpdateInput{
 \t\tName:   p.Name,
@@ -1239,6 +1258,7 @@ type UserList struct {
 \tItems []User \`json:"items"\`
 }
 
+// UserFromDomain 将领域实体转换成响应 DTO。
 func UserFromDomain(entity domain.User) User {
 \treturn User{
 \t\tID:        entity.ID,
@@ -1251,6 +1271,7 @@ func UserFromDomain(entity domain.User) User {
 \t}
 }
 
+// UserListFromDomain 批量转换用户列表响应。
 func UserListFromDomain(items []domain.User) UserList {
 \tresult := UserList{Items: make([]User, 0, len(items))}
 \tfor _, item := range items {
@@ -1266,6 +1287,8 @@ function backendCorsMiddleware() {
 
 import "net/http"
 
+// CORS 处理浏览器跨域预检和响应头。
+// demo 默认放开来源，生产项目应改为配置化白名单。
 func CORS(next http.Handler) http.Handler {
 \treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 \t\tw.Header().Set("Access-Control-Allow-Origin", "*")
@@ -1297,6 +1320,8 @@ import (
 
 type traceIDKey struct{}
 
+// Trace 为每个请求准备 trace_id，并创建 HTTP 层 span。
+// 上游传入 X-Trace-ID 时会透传，便于前后端联动排查。
 func Trace(tracer *otel.Tracer) func(http.Handler) http.Handler {
 \treturn func(next http.Handler) http.Handler {
 \treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1355,6 +1380,7 @@ func (r *statusRecorder) WriteHeader(status int) {
 \tr.ResponseWriter.WriteHeader(status)
 }
 
+// RequestLog 在请求结束后记录方法、路径、状态码、耗时和 trace_id。
 func RequestLog(log logger.Contract) func(http.Handler) http.Handler {
 \treturn func(next http.Handler) http.Handler {
 \t\treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1385,6 +1411,7 @@ import (
 \t"${mod}/backend/internal/infrastructure/support/logger"
 )
 
+// Recovery 捕获 panic，避免单个请求导致整个服务退出。
 func Recovery(log logger.Contract) func(http.Handler) http.Handler {
 \treturn func(next http.Handler) http.Handler {
 \t\treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1423,12 +1450,15 @@ type Controllers struct {
 \tUsers *controllers.UserHandler
 }
 
+// SetupRouter 统一装配全局中间件和业务路由。
+// 顺序遵循：Recovery/日志/Trace/CORS 包裹业务 mux，请求进入后再分发到 routes。
 func SetupRouter(ctrl Controllers, log logger.Contract, tracer *otel.Tracer) http.Handler {
 \tmux := http.NewServeMux()
 \tmux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
 \t\tw.Header().Set("Content-Type", "application/json; charset=utf-8")
 \t\t_, _ = w.Write([]byte(\`{"code":200,"message":"ok","data":{"service":"demo-backend"}}\`))
 \t})
+\t// 观测 demo：直接暴露内存 spans，真实项目通常会接 Prometheus/OTLP/Trace 后端。
 \tmux.HandleFunc("GET /api/v1/observability/spans", func(w http.ResponseWriter, r *http.Request) {
 \t\tw.Header().Set("Content-Type", "application/json; charset=utf-8")
 \t\t_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -1462,6 +1492,7 @@ import (
 )
 
 func RegisterUserRoutes(mux *http.ServeMux, users *controllers.UserHandler) {
+\t// routes 只负责 URL 与 Controller 方法的绑定，避免 Controller 自己知道完整路由表。
 \tmux.HandleFunc("GET /api/v1/users", users.List)
 \tmux.HandleFunc("POST /api/v1/users", users.Create)
 \tmux.HandleFunc("GET /api/v1/users/{id}", users.Get)
@@ -1493,6 +1524,8 @@ type UserRepository struct {
 \ttracer   *otel.Tracer
 }
 
+// NewUserRepository 创建内存版用户仓储。
+// 真实项目可在同一契约下替换为 postgres/repository 实现。
 func NewUserRepository(tracer *otel.Tracer) *UserRepository {
 \treturn &UserRepository{
 \t\titems: make(map[string]domain.User),
@@ -1510,6 +1543,7 @@ func (r *UserRepository) NextID(ctx context.Context) (string, error) {
 }
 
 func (r *UserRepository) Create(ctx context.Context, entity domain.User) (domain.User, error) {
+\t// repository span 用于定位具体存储层耗时。
 \t_, end := r.tracer.Start(ctx, otel.LayerRepository, "user.create", map[string]string{"user_id": entity.ID})
 \tvar err error
 \tdefer func() { end(err) }()
@@ -1611,6 +1645,7 @@ type Message struct {
 \tBody      string \`json:"body"\`
 }
 
+// Contract 定义通知网关契约，真实项目可替换为站内信、微信、短信或邮件实现。
 type Contract interface {
 \tSend(ctx context.Context, message Message) error
 }
@@ -1656,6 +1691,7 @@ type Event struct {
 \tPayload interface{} \`json:"payload"\`
 }
 
+// Contract 定义队列/事件网关契约，demo 用内存实现记录已发布事件。
 type Contract interface {
 \tPublish(ctx context.Context, event Event) error
 \tPublished(ctx context.Context) []Event
@@ -1709,6 +1745,7 @@ import (
 )
 
 type Contract interface {
+\t// Set 写入缓存；ttl 由调用方决定，demo 中用于用户列表读模型。
 \tSet(ctx context.Context, key string, value []byte, ttl time.Duration)
 \tGet(ctx context.Context, key string) ([]byte, bool)
 \tDelete(ctx context.Context, keys ...string)
@@ -1775,6 +1812,7 @@ function backendLoggerContract() {
 import "context"
 
 type Contract interface {
+\t// Debug/Info/Error 是 support/logger 的最小接口，方便 usecase 和 middleware 记录结构化字段。
 \tDebug(ctx context.Context, message string, fields map[string]string)
 \tInfo(ctx context.Context, message string, fields map[string]string)
 \tError(ctx context.Context, message string, fields map[string]string)
@@ -1867,6 +1905,8 @@ type Span struct {
 \tAttrs     map[string]string \`json:"attrs,omitempty"\`
 }
 
+// Tracer 是 demo 版 OTel 支撑组件。
+// 它把 span 存在内存中，便于无需外部 Collector 也能观察分层埋点。
 type Tracer struct {
 \tmu    sync.RWMutex
 \tspans []Span
@@ -1876,6 +1916,8 @@ func NewTracer() *Tracer {
 \treturn &Tracer{}
 }
 
+// Start 创建一个 span，并返回 end 函数。
+// 调用方用 defer end(err) 记录成功或错误状态。
 func (t *Tracer) Start(ctx context.Context, layer string, name string, attrs map[string]string) (context.Context, func(error)) {
 \tparent, _ := ctx.Value(spanKey{}).(Span)
 \ttraceID := parent.TraceID
@@ -1913,6 +1955,7 @@ func (t *Tracer) RecordError(ctx context.Context, err error) {
 }
 
 func (t *Tracer) Snapshot() []Span {
+\t// Snapshot 返回按开始时间排序的 span 副本，供观测接口展示。
 \tt.mu.RLock()
 \tdefer t.mu.RUnlock()
 \titems := make([]Span, len(t.spans))
@@ -1976,6 +2019,8 @@ type App struct {
 \tRouter         http.Handler
 }
 
+// NewApp 是应用装配入口。
+// 这里按 VOMS 风格分步初始化基础设施、仓储、用例、控制器和路由。
 func NewApp() *App {
 \tinfra := InitInfrastructure()
 \trepos := InitRepositories(infra)
@@ -2017,6 +2062,7 @@ type Infrastructure struct {
 \tTracer       *otel.Tracer
 }
 
+// InitInfrastructure 初始化所有横切和外部适配能力。
 func InitInfrastructure() *Infrastructure {
 \tlog := loggermem.NewLogger()
 \ttracer := otel.NewTracer()
@@ -2044,6 +2090,7 @@ type Repositories struct {
 \tUsers domain.Repository
 }
 
+// InitRepositories 初始化领域仓储集合。
 func InitRepositories(infra *Infrastructure) *Repositories {
 \treturn &Repositories{
 \t\tUsers: repositorymem.NewUserRepository(infra.Tracer),
@@ -2062,6 +2109,7 @@ type UseCases struct {
 \tUsers *useruc.Service
 }
 
+// InitUseCases 初始化用例层，并把仓储和基础设施契约注入进去。
 func InitUseCases(repos *Repositories, infra *Infrastructure) *UseCases {
 \treturn &UseCases{
 \t\tUsers: useruc.NewService(repos.Users, infra.Cache, infra.EventBus, infra.Notification, infra.Logger, infra.Tracer),
@@ -2080,6 +2128,7 @@ type Controllers struct {
 \tUsers *controllers.UserHandler
 }
 
+// InitControllers 初始化 HTTP 控制器集合。
 func InitControllers(useCases *UseCases) *Controllers {
 \treturn &Controllers{
 \t\tUsers: controllers.NewUserHandler(useCases.Users),
