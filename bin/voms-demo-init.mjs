@@ -24,11 +24,11 @@ await writeProject(targetRoot, context);
 
 console.log(`Demo architecture project created: ${targetRoot}`);
 console.log("");
-  console.log("Next steps:");
-  console.log(`  cd ${path.relative(process.cwd(), targetRoot) || "."}`);
-  console.log("  make help");
-  console.log("  make dev-backend");
-  console.log("  open AGENTS.md");
+console.log("Next steps:");
+console.log(`  cd ${path.relative(process.cwd(), targetRoot) || "."}`);
+console.log("  make help");
+console.log("  make dev-backend");
+console.log("  open AGENTS.md");
 
 function parseArgs(rawArgs) {
   const parsed = {};
@@ -97,7 +97,11 @@ This creates a VOMS-style architecture demo with a user CRUD vertical slice:
   backend/internal/domain   User entity and repository contract
   backend/internal/usecase  User service
   backend/internal/interface/rest User REST controller
-  backend/internal/infrastructure In-memory user repository
+  backend/internal/infrastructure/gateways/persistence/memory User repository gateway
+  backend/internal/infrastructure/gateways/notification/memory User notification gateway
+  backend/internal/infrastructure/gateways/queue/memory Domain event gateway
+  backend/internal/infrastructure/support/cache/memory Read model cache
+  backend/internal/infrastructure/support/logger/std Structured logger
   front/admin/web/          Admin Web boundary
   front/admin/web/src/api/users.ts
   front/admin/web/src/store/userStore.ts
@@ -138,7 +142,19 @@ async function writeProject(root, ctx) {
     "backend/internal/interface/rest",
     "backend/internal/interface/rest/middleware",
     "backend/internal/infrastructure",
-    "backend/internal/infrastructure/memory",
+    "backend/internal/infrastructure/gateways",
+    "backend/internal/infrastructure/gateways/notification",
+    "backend/internal/infrastructure/gateways/notification/memory",
+    "backend/internal/infrastructure/gateways/persistence",
+    "backend/internal/infrastructure/gateways/persistence/memory",
+    "backend/internal/infrastructure/gateways/persistence/memory/repository",
+    "backend/internal/infrastructure/gateways/queue",
+    "backend/internal/infrastructure/gateways/queue/memory",
+    "backend/internal/infrastructure/support",
+    "backend/internal/infrastructure/support/cache",
+    "backend/internal/infrastructure/support/cache/memory",
+    "backend/internal/infrastructure/support/logger",
+    "backend/internal/infrastructure/support/logger/std",
     "backend/internal/wire",
     "backend/migrations/up",
     "front/admin/web/src/api",
@@ -208,7 +224,18 @@ function buildFiles(ctx) {
     "backend/internal/interface/rest/response.go": backendRestResponse(),
     "backend/internal/interface/rest/user_handler.go": backendUserHandler(ctx),
     "backend/internal/infrastructure/README.md": layerReadme("基础设施层", "数据库、缓存、消息、文件、外部服务和可观测实现。"),
-    "backend/internal/infrastructure/memory/user_repository.go": backendMemoryUserRepository(ctx),
+    "backend/internal/infrastructure/gateways/README.md": layerReadme("Gateways", "对外部系统和持久化能力的适配层，如数据库、队列、通知、对象存储和第三方 API。"),
+    "backend/internal/infrastructure/gateways/persistence/README.md": layerReadme("Persistence Gateway", "持久化网关，负责把领域仓储契约适配到具体存储实现。"),
+    "backend/internal/infrastructure/gateways/persistence/memory/repository/user_repository.go": backendMemoryUserRepository(ctx),
+    "backend/internal/infrastructure/gateways/notification/contract.go": backendNotificationContract(ctx),
+    "backend/internal/infrastructure/gateways/notification/memory/notifier.go": backendMemoryNotifier(ctx),
+    "backend/internal/infrastructure/gateways/queue/contract.go": backendQueueContract(),
+    "backend/internal/infrastructure/gateways/queue/memory/event_bus.go": backendMemoryEventBus(ctx),
+    "backend/internal/infrastructure/support/README.md": layerReadme("Support", "跨业务的技术支撑能力，如缓存、日志、鉴权、会话、可观测和通用工具。"),
+    "backend/internal/infrastructure/support/cache/contract.go": backendCacheContract(),
+    "backend/internal/infrastructure/support/cache/memory/cache.go": backendMemoryCache(),
+    "backend/internal/infrastructure/support/logger/contract.go": backendLoggerContract(),
+    "backend/internal/infrastructure/support/logger/std/logger.go": backendStdLogger(),
     "backend/internal/wire/README.md": layerReadme("组装层", "依赖注入、生命周期管理和应用装配。"),
     "backend/internal/wire/app.go": backendWireApp(ctx),
     "backend/migrations/up/000001_init_users.sql": backendUsersMigration(),
@@ -578,7 +605,7 @@ function backendFolderIndex() {
 ### \`internal/infrastructure/\`
 - 地位: 基础设施实现层
 - 功能: 数据库、缓存、消息、日志、可观测等技术实现
-- 示例: \`internal/infrastructure/memory.UserRepository\` 提供内存仓储
+- 示例: \`gateways/persistence/memory/repository.UserRepository\` 提供持久化网关，\`support/cache/memory.Cache\` 提供缓存支撑，\`gateways/queue/memory.EventBus\` 记录领域事件
 
 ### \`internal/wire/\`
 - 地位: 组装层
@@ -607,12 +634,13 @@ function backendCodemap() {
 - \`internal/domain/\`: 领域实体和业务规则。
 - \`internal/usecase/\`: 应用服务和事务边界。
 - \`internal/interface/\`: 协议适配。
-- \`internal/infrastructure/\`: 外部技术实现。
+- \`internal/infrastructure/gateways/\`: 持久化、通知、队列、对象存储、第三方 API 等外部能力适配。
+- \`internal/infrastructure/support/\`: 缓存、日志、鉴权、可观测、会话等跨业务技术支撑。
 - \`internal/wire/\`: 依赖组装。
 
 ## Flow
 
-用户 CRUD 请求进入 \`internal/interface/rest.UserHandler\`，Handler 调用 \`internal/usecase/user.Service\`，Service 围绕 \`internal/domain/user.User\` 执行业务规则，并通过 \`internal/infrastructure/memory.UserRepository\` 完成持久化。
+用户 CRUD 请求进入 \`internal/interface/rest.UserHandler\`，Handler 调用 \`internal/usecase/user.Service\`，Service 围绕 \`internal/domain/user.User\` 执行业务规则，并通过 \`gateways/persistence\` 完成持久化，通过 \`support/cache\` 缓存列表读模型，通过 \`gateways/queue\` 发布领域事件，通过 \`gateways/notification\` 触发通知。
 `;
 }
 
@@ -709,19 +737,24 @@ function backendServerMain(ctx) {
 import (
 \t"log"
 \t"net/http"
+\t"os"
 
 \t"${mod}/backend/internal/wire"
 )
 
 func main() {
 \tapp := wire.NewApp()
+\tport := os.Getenv("PORT")
+\tif port == "" {
+\t\tport = "8080"
+\t}
 \tserver := &http.Server{
-\t\tAddr:    ":8080",
+\t\tAddr:    ":" + port,
 \t\tHandler: app.Router,
 \t}
 
-\tlog.Println("demo backend listening on http://127.0.0.1:8080")
-\tlog.Println("user CRUD API: http://127.0.0.1:8080/api/v1/users")
+\tlog.Printf("demo backend listening on http://127.0.0.1:%s", port)
+\tlog.Printf("user CRUD API: http://127.0.0.1:%s/api/v1/users", port)
 \tif err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 \t\tlog.Fatal(err)
 \t}
@@ -863,19 +896,38 @@ function backendUserService(ctx) {
 
 import (
 \t"context"
+\t"encoding/json"
 \t"time"
 
 \tdomain "${mod}/backend/internal/domain/user"
+\t"${mod}/backend/internal/infrastructure/gateways/notification"
+\t"${mod}/backend/internal/infrastructure/gateways/queue"
+\t"${mod}/backend/internal/infrastructure/support/cache"
+\t"${mod}/backend/internal/infrastructure/support/logger"
 )
 
 type Service struct {
 \trepository domain.Repository
+\tcache      cache.Contract
+\tevents     queue.Contract
+\tnotifier   notification.Contract
+\tlogger     logger.Contract
 \tnow        func() time.Time
 }
 
-func NewService(repository domain.Repository) *Service {
+func NewService(
+\trepository domain.Repository,
+\tcache cache.Contract,
+\tevents queue.Contract,
+\tnotifier notification.Contract,
+\tlogger logger.Contract,
+) *Service {
 \treturn &Service{
 \t\trepository: repository,
+\t\tcache:      cache,
+\t\tevents:     events,
+\t\tnotifier:   notifier,
+\t\tlogger:     logger,
 \t\tnow:        time.Now,
 \t}
 }
@@ -890,11 +942,32 @@ func (s *Service) Create(ctx context.Context, input domain.CreateInput) (domain.
 \tif err != nil {
 \t\treturn domain.User{}, err
 \t}
-\treturn s.repository.Create(ctx, entity)
+\tcreated, err := s.repository.Create(ctx, entity)
+\tif err != nil {
+\t\treturn domain.User{}, err
+\t}
+\ts.afterUserChanged(ctx, "user.created", created)
+\treturn created, nil
 }
 
 func (s *Service) List(ctx context.Context) ([]domain.User, error) {
-\treturn s.repository.List(ctx)
+\tconst key = "users:list"
+\tif cached, ok := s.cache.Get(ctx, key); ok {
+\t\tvar items []domain.User
+\t\tif err := json.Unmarshal(cached, &items); err == nil {
+\t\t\ts.logger.Debug(ctx, "user list cache hit", map[string]string{"key": key})
+\t\t\treturn items, nil
+\t\t}
+\t}
+
+\titems, err := s.repository.List(ctx)
+\tif err != nil {
+\t\treturn nil, err
+\t}
+\tif encoded, err := json.Marshal(items); err == nil {
+\t\ts.cache.Set(ctx, key, encoded, 30*time.Second)
+\t}
+\treturn items, nil
 }
 
 func (s *Service) Get(ctx context.Context, id string) (domain.User, error) {
@@ -911,11 +984,33 @@ func (s *Service) Update(ctx context.Context, id string, input domain.UpdateInpu
 \tif err != nil {
 \t\treturn domain.User{}, err
 \t}
-\treturn s.repository.Update(ctx, next)
+\tupdated, err := s.repository.Update(ctx, next)
+\tif err != nil {
+\t\treturn domain.User{}, err
+\t}
+\ts.afterUserChanged(ctx, "user.updated", updated)
+\treturn updated, nil
 }
 
 func (s *Service) Delete(ctx context.Context, id string) error {
-\treturn s.repository.Delete(ctx, id)
+\tif err := s.repository.Delete(ctx, id); err != nil {
+\t\treturn err
+\t}
+\ts.cache.Delete(ctx, "users:list")
+\ts.events.Publish(ctx, queue.Event{Subject: "user.deleted", Payload: map[string]string{"id": id}})
+\ts.logger.Info(ctx, "user deleted", map[string]string{"id": id})
+\treturn nil
+}
+
+func (s *Service) afterUserChanged(ctx context.Context, subject string, entity domain.User) {
+\ts.cache.Delete(ctx, "users:list")
+\ts.events.Publish(ctx, queue.Event{Subject: subject, Payload: entity})
+\ts.notifier.Send(ctx, notification.Message{
+\t\tRecipient: entity.Email,
+\t\tTitle:     "User profile changed",
+\t\tBody:      "The demo user record has been updated.",
+\t})
+\ts.logger.Info(ctx, subject, map[string]string{"user_id": entity.ID, "email": entity.Email})
 }
 `;
 }
@@ -1051,7 +1146,7 @@ func handleUserError(w http.ResponseWriter, err error) {
 
 function backendMemoryUserRepository(ctx) {
   const mod = moduleName(ctx.projectName);
-  return `package memory
+  return `package repository
 
 import (
 \t"context"
@@ -1150,6 +1245,231 @@ func (r *UserRepository) emailExists(email string, exceptID string) bool {
 `;
 }
 
+function backendNotificationContract() {
+  return `package notification
+
+import "context"
+
+type Message struct {
+\tRecipient string \`json:"recipient"\`
+\tTitle     string \`json:"title"\`
+\tBody      string \`json:"body"\`
+}
+
+type Contract interface {
+\tSend(ctx context.Context, message Message) error
+}
+`;
+}
+
+function backendMemoryNotifier(ctx) {
+  const mod = moduleName(ctx.projectName);
+  return `package memory
+
+import (
+\t"context"
+
+\t"${mod}/backend/internal/infrastructure/gateways/notification"
+\t"${mod}/backend/internal/infrastructure/support/logger"
+)
+
+type Notifier struct {
+\tlogger logger.Contract
+}
+
+func NewNotifier(logger logger.Contract) *Notifier {
+\treturn &Notifier{logger: logger}
+}
+
+func (n *Notifier) Send(ctx context.Context, message notification.Message) error {
+\tn.logger.Info(ctx, "notification queued", map[string]string{
+\t\t"recipient": message.Recipient,
+\t\t"title":     message.Title,
+\t})
+\treturn nil
+}
+`;
+}
+
+function backendQueueContract() {
+  return `package queue
+
+import "context"
+
+type Event struct {
+\tSubject string      \`json:"subject"\`
+\tPayload interface{} \`json:"payload"\`
+}
+
+type Contract interface {
+\tPublish(ctx context.Context, event Event) error
+\tPublished(ctx context.Context) []Event
+}
+`;
+}
+
+function backendMemoryEventBus(ctx) {
+  const mod = moduleName(ctx.projectName);
+  return `package memory
+
+import (
+\t"context"
+\t"sync"
+
+\t"${mod}/backend/internal/infrastructure/gateways/queue"
+)
+
+type EventBus struct {
+\tmu     sync.RWMutex
+\tevents []queue.Event
+}
+
+func NewEventBus() *EventBus {
+\treturn &EventBus{}
+}
+
+func (b *EventBus) Publish(_ context.Context, event queue.Event) error {
+\tb.mu.Lock()
+\tdefer b.mu.Unlock()
+\tb.events = append(b.events, event)
+\treturn nil
+}
+
+func (b *EventBus) Published(context.Context) []queue.Event {
+\tb.mu.RLock()
+\tdefer b.mu.RUnlock()
+\titems := make([]queue.Event, len(b.events))
+\tcopy(items, b.events)
+\treturn items
+}
+`;
+}
+
+function backendCacheContract() {
+  return `package cache
+
+import (
+\t"context"
+\t"time"
+)
+
+type Contract interface {
+\tSet(ctx context.Context, key string, value []byte, ttl time.Duration)
+\tGet(ctx context.Context, key string) ([]byte, bool)
+\tDelete(ctx context.Context, keys ...string)
+}
+`;
+}
+
+function backendMemoryCache() {
+  return `package memory
+
+import (
+\t"context"
+\t"sync"
+\t"time"
+)
+
+type item struct {
+\tvalue     []byte
+\texpiresAt time.Time
+}
+
+type Cache struct {
+\tmu    sync.RWMutex
+\titems map[string]item
+}
+
+func NewCache() *Cache {
+\treturn &Cache{items: make(map[string]item)}
+}
+
+func (c *Cache) Set(_ context.Context, key string, value []byte, ttl time.Duration) {
+\tc.mu.Lock()
+\tdefer c.mu.Unlock()
+\tc.items[key] = item{value: append([]byte(nil), value...), expiresAt: time.Now().Add(ttl)}
+}
+
+func (c *Cache) Get(_ context.Context, key string) ([]byte, bool) {
+\tc.mu.RLock()
+\titem, ok := c.items[key]
+\tc.mu.RUnlock()
+\tif !ok {
+\t\treturn nil, false
+\t}
+\tif !item.expiresAt.IsZero() && time.Now().After(item.expiresAt) {
+\t\tc.Delete(context.Background(), key)
+\t\treturn nil, false
+\t}
+\treturn append([]byte(nil), item.value...), true
+}
+
+func (c *Cache) Delete(_ context.Context, keys ...string) {
+\tc.mu.Lock()
+\tdefer c.mu.Unlock()
+\tfor _, key := range keys {
+\t\tdelete(c.items, key)
+\t}
+}
+`;
+}
+
+function backendLoggerContract() {
+  return `package logger
+
+import "context"
+
+type Contract interface {
+\tDebug(ctx context.Context, message string, fields map[string]string)
+\tInfo(ctx context.Context, message string, fields map[string]string)
+\tError(ctx context.Context, message string, fields map[string]string)
+}
+`;
+}
+
+function backendStdLogger() {
+  return `package std
+
+import (
+\t"context"
+\t"log"
+\t"sort"
+\t"strings"
+)
+
+type Logger struct{}
+
+func NewLogger() *Logger {
+\treturn &Logger{}
+}
+
+func (l *Logger) Debug(ctx context.Context, message string, fields map[string]string) {
+\tl.write("DEBUG", message, fields)
+}
+
+func (l *Logger) Info(ctx context.Context, message string, fields map[string]string) {
+\tl.write("INFO", message, fields)
+}
+
+func (l *Logger) Error(ctx context.Context, message string, fields map[string]string) {
+\tl.write("ERROR", message, fields)
+}
+
+func (l *Logger) write(level string, message string, fields map[string]string) {
+\tparts := make([]string, 0, len(fields))
+\tfor key, value := range fields {
+\t\tparts = append(parts, key+"="+value)
+\t}
+\tsort.Strings(parts)
+\tif len(parts) > 0 {
+\t\tlog.Printf("%s %s %s", level, message, strings.Join(parts, " "))
+\t\treturn
+\t}
+\tlog.Printf("%s %s", level, message)
+}
+`;
+}
+
 function backendWireApp(ctx) {
   const mod = moduleName(ctx.projectName);
   return `package wire
@@ -1157,7 +1477,11 @@ function backendWireApp(ctx) {
 import (
 \t"net/http"
 
-\t"${mod}/backend/internal/infrastructure/memory"
+\tnotificationmem "${mod}/backend/internal/infrastructure/gateways/notification/memory"
+\trepositorymem "${mod}/backend/internal/infrastructure/gateways/persistence/memory/repository"
+\tqueuemem "${mod}/backend/internal/infrastructure/gateways/queue/memory"
+\tcachemem "${mod}/backend/internal/infrastructure/support/cache/memory"
+\tloggermem "${mod}/backend/internal/infrastructure/support/logger/std"
 \t"${mod}/backend/internal/interface/rest"
 \tuseruc "${mod}/backend/internal/usecase/user"
 )
@@ -1168,8 +1492,12 @@ type App struct {
 
 func NewApp() *App {
 \tmux := http.NewServeMux()
-\tuserRepository := memory.NewUserRepository()
-\tuserService := useruc.NewService(userRepository)
+\tlogger := loggermem.NewLogger()
+\tcache := cachemem.NewCache()
+\teventBus := queuemem.NewEventBus()
+\tnotifier := notificationmem.NewNotifier(logger)
+\tuserRepository := repositorymem.NewUserRepository()
+\tuserService := useruc.NewService(userRepository, cache, eventBus, notifier, logger)
 \tuserHandler := rest.NewUserHandler(userService)
 
 \tmux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
@@ -1784,13 +2112,16 @@ function userBusinessFlowDoc() {
 3. Store 调用 \`src/api/users.ts#createUser\` 发起 \`POST /api/v1/users\`。
 4. 后端 \`internal/interface/rest.UserHandler\` 绑定请求并调用用例层。
 5. \`internal/usecase/user.Service\` 创建领域实体并调用仓储。
-6. \`internal/infrastructure/memory.UserRepository\` 保存用户并返回结果。
+6. \`internal/infrastructure/gateways/persistence/memory/repository.UserRepository\` 保存用户并返回结果。
+7. 用例层清理 \`support/cache\` 中的用户列表缓存，并通过 \`gateways/queue\` 记录领域事件。
+8. \`gateways/notification\` 发送用户变更通知，\`support/logger\` 记录结构化日志。
 
 ### 更新和删除用户
 
 - 更新走 \`PUT /api/v1/users/{id}\`，先读取当前实体，再应用领域校验。
 - 删除走 \`DELETE /api/v1/users/{id}\`，仓储负责确认目标存在。
-- 邮箱唯一性由仓储实现约束，领域层负责字段合法性。
+- 邮箱唯一性由持久化网关实现约束，领域层负责字段合法性。
+- 列表读取会先查 \`support/cache\`，写操作会主动失效缓存。
 `;
 }
 

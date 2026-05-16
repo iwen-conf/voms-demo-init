@@ -1,7 +1,7 @@
 {
   "name": "voms-demo-init",
-  "version": "0.2.0",
-  "description": "Generate a VOMS-style full-stack monorepo demo with a user CRUD vertical slice.",
+  "version": "0.3.0",
+  "description": "Generate a VOMS-style full-stack monorepo demo with a layered user CRUD vertical slice.",
   "type": "module",
   "bin": {
     "voms-demo-init": "./bin/voms-demo-init.mjs"
