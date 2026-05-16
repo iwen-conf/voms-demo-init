@@ -1,7 +1,7 @@
 {
   "name": "voms-demo-init",
-  "version": "0.1.0",
-  "description": "Generate a VOMS-style full-stack monorepo architecture demo.",
+  "version": "0.2.0",
+  "description": "Generate a VOMS-style full-stack monorepo demo with a user CRUD vertical slice.",
   "type": "module",
   "bin": {
     "voms-demo-init": "./bin/voms-demo-init.mjs"
@@ -13,7 +13,7 @@
   ],
   "scripts": {
     "check": "node --check bin/voms-demo-init.mjs",
-    "smoke": "rm -rf dist/smoke-demo && node bin/voms-demo-init.mjs smoke-demo --dir dist/smoke-demo && make -C dist/smoke-demo help"
+    "smoke": "rm -rf dist/smoke-demo && node bin/voms-demo-init.mjs smoke-demo --dir dist/smoke-demo && make -C dist/smoke-demo build-backend && make -C dist/smoke-demo help"
   },
   "keywords": [
     "voms",

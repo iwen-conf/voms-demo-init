@@ -1,6 +1,6 @@
 # voms-demo-init
 
-Generate a VOMS-style full-stack monorepo architecture demo.
+Generate a VOMS-style full-stack monorepo demo with a user CRUD vertical slice.
 
 The generated project keeps the architecture documentation style from VOMS:
 
@@ -9,6 +9,9 @@ The generated project keeps the architecture documentation style from VOMS:
 - admin Web, public Web, and mini program frontend boundaries
 - docs sections for requirements, architecture, permissions, flows, data model, API, and operations
 - ops boundaries for deploy, recovery, and cloud publishing
+- runnable Go backend user CRUD API: `GET/POST/PUT/DELETE /api/v1/users`
+- admin Web user management page, API client, Pinia store, and route
+- API, data model, and business-flow documentation for the CRUD slice
 
 ## Install
 
@@ -51,6 +54,7 @@ After generation:
 ```bash
 cd dist/demo/voms-architecture-demo
 make help
+make dev-backend
 open AGENTS.md
 ```
 

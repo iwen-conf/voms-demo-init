@@ -24,10 +24,11 @@ await writeProject(targetRoot, context);
 
 console.log(`Demo architecture project created: ${targetRoot}`);
 console.log("");
-console.log("Next steps:");
-console.log(`  cd ${path.relative(process.cwd(), targetRoot) || "."}`);
-console.log("  make help");
-console.log("  open AGENTS.md");
+  console.log("Next steps:");
+  console.log(`  cd ${path.relative(process.cwd(), targetRoot) || "."}`);
+  console.log("  make help");
+  console.log("  make dev-backend");
+  console.log("  open AGENTS.md");
 
 function parseArgs(rawArgs) {
   const parsed = {};
@@ -84,16 +85,23 @@ function requireValue(rawArgs, index, flag) {
 
 function printHelp() {
   console.log(`Usage:
-  node tools/voms-demo-init.mjs [name] [--dir <path>] [--title <title>] [--force]
+  voms-demo-init [name] [--dir <path>] [--title <title>] [--force]
 
 Examples:
-  node tools/voms-demo-init.mjs
-  node tools/voms-demo-init.mjs volunteer-platform-demo
-  node tools/voms-demo-init.mjs --dir ../my-demo --title "My Platform"
+  voms-demo-init
+  voms-demo-init volunteer-platform-demo
+  voms-demo-init --dir ../my-demo --title "My Platform"
 
-This creates a VOMS-style architecture demo skeleton:
+This creates a VOMS-style architecture demo with a user CRUD vertical slice:
   backend/                  Go service boundary
+  backend/internal/domain   User entity and repository contract
+  backend/internal/usecase  User service
+  backend/internal/interface/rest User REST controller
+  backend/internal/infrastructure In-memory user repository
   front/admin/web/          Admin Web boundary
+  front/admin/web/src/api/users.ts
+  front/admin/web/src/store/userStore.ts
+  front/admin/web/src/views/UserManagement.vue
   front/public/             Public and self-service Web boundary
   front/miniprogram/        Mini program boundary
   docs/                     Product and API documentation boundary
@@ -124,9 +132,13 @@ async function writeProject(root, ctx) {
     "backend/cmd/workers/scheduler",
     "backend/configs",
     "backend/internal/domain",
+    "backend/internal/domain/user",
     "backend/internal/usecase",
+    "backend/internal/usecase/user",
     "backend/internal/interface/rest",
+    "backend/internal/interface/rest/middleware",
     "backend/internal/infrastructure",
+    "backend/internal/infrastructure/memory",
     "backend/internal/wire",
     "backend/migrations/up",
     "front/admin/web/src/api",
@@ -134,6 +146,7 @@ async function writeProject(root, ctx) {
     "front/admin/web/src/router",
     "front/admin/web/src/store",
     "front/admin/web/src/views",
+    "front/admin/web/src/views/users",
     "front/public/src/api",
     "front/public/src/components",
     "front/public/src/router",
@@ -181,16 +194,24 @@ function buildFiles(ctx) {
     "backend/CLAUDE.md": moduleClaude("backend", "Go 后端服务"),
     "backend/FOLDER_INDEX.md": backendFolderIndex(),
     "backend/codemap.md": backendCodemap(),
-    "backend/cmd/server/main.go": goMain("server"),
+    "backend/go.mod": backendGoMod(ctx),
+    "backend/cmd/server/main.go": backendServerMain(ctx),
     "backend/cmd/workers/consumer/main.go": goMain("consumer worker"),
     "backend/cmd/workers/scheduler/main.go": goMain("scheduler worker"),
     "backend/configs/app.example.yaml": "app:\n  name: demo-service\n  env: local\n",
     "backend/internal/domain/README.md": layerReadme("领域层", "实体、值对象、领域规则和仓储接口定义。"),
+    "backend/internal/domain/user/model.go": backendUserDomainModel(),
+    "backend/internal/domain/user/repository.go": backendUserRepositoryContract(),
     "backend/internal/usecase/README.md": layerReadme("应用服务层", "编排业务流程、事务边界和跨领域协作。"),
+    "backend/internal/usecase/user/service.go": backendUserService(ctx),
     "backend/internal/interface/rest/README.md": layerReadme("接口适配层", "HTTP 路由、请求绑定、响应封装和协议转换。"),
+    "backend/internal/interface/rest/response.go": backendRestResponse(),
+    "backend/internal/interface/rest/user_handler.go": backendUserHandler(ctx),
     "backend/internal/infrastructure/README.md": layerReadme("基础设施层", "数据库、缓存、消息、文件、外部服务和可观测实现。"),
+    "backend/internal/infrastructure/memory/user_repository.go": backendMemoryUserRepository(ctx),
     "backend/internal/wire/README.md": layerReadme("组装层", "依赖注入、生命周期管理和应用装配。"),
-    "backend/migrations/up/000001_init.sql": "-- Initial database schema goes here.\n",
+    "backend/internal/wire/app.go": backendWireApp(ctx),
+    "backend/migrations/up/000001_init_users.sql": backendUsersMigration(),
     "front/AGENTS.md": moduleAgents("front", "../AGENTS.md", "make build-front-admin && make build-front-public", [
       "Web 与小程序客户端族",
       "前端路由、状态、组件和后端 API 契约消费",
@@ -203,7 +224,19 @@ function buildFiles(ctx) {
     "front/admin/web/CLAUDE.md": moduleClaude("front/admin/web", "管理后台 Web"),
     "front/admin/web/FOLDER_INDEX.md": webFolderIndex("front/admin/web", "管理后台"),
     "front/admin/web/codemap.md": webCodemap("front/admin/web", "Admin Web"),
-    "front/admin/web/src/main.ts": vueMain("admin"),
+    "front/admin/web/package.json": adminPackageJson(ctx),
+    "front/admin/web/pnpm-workspace.yaml": adminPnpmWorkspace(),
+    "front/admin/web/index.html": adminIndexHtml(ctx),
+    "front/admin/web/vite.config.ts": adminViteConfig(),
+    "front/admin/web/tsconfig.json": adminTsconfig(),
+    "front/admin/web/src/vite-env.d.ts": "/// <reference types=\"vite/client\" />\n",
+    "front/admin/web/src/main.ts": adminMainTs(),
+    "front/admin/web/src/App.vue": adminAppVue(ctx),
+    "front/admin/web/src/api/http.ts": adminHttpApi(),
+    "front/admin/web/src/api/users.ts": adminUsersApi(),
+    "front/admin/web/src/store/userStore.ts": adminUserStore(),
+    "front/admin/web/src/router/index.ts": adminRouter(),
+    "front/admin/web/src/views/users/UserManagement.vue": adminUserManagementVue(),
     "front/admin/web/src/router/README.md": layerReadme("路由层", "页面注册、访问控制和导航守卫。"),
     "front/admin/web/src/store/README.md": layerReadme("状态层", "用户、权限和全局 UI 状态管理。"),
     "front/admin/web/src/api/README.md": layerReadme("API 层", "按业务域封装后端接口和请求类型。"),
@@ -241,9 +274,9 @@ function buildFiles(ctx) {
     "docs/01-requirements/README.md": docSection("需求文档", "记录业务背景、用户角色、场景和验收标准。"),
     "docs/02-architecture/README.md": docSection("架构设计", "记录模块边界、依赖方向、关键链路和技术选型。"),
     "docs/03-permissions/README.md": docSection("权限矩阵", "记录角色、资源、动作和授权边界。"),
-    "docs/04-business-flows/README.md": docSection("业务流设计", "记录端到端流程、状态机和异常分支。"),
-    "docs/05-data-model/README.md": docSection("数据模型", "记录核心实体、关系、索引和迁移策略。"),
-    "docs/06-api/README.md": docSection("API 文档", "记录后端契约、请求响应、错误码和兼容策略。"),
+    "docs/04-business-flows/README.md": userBusinessFlowDoc(),
+    "docs/05-data-model/README.md": userDataModelDoc(),
+    "docs/06-api/README.md": userApiDoc(),
     "docs/07-operations/README.md": docSection("运维文档", "记录部署、备份、恢复、监控和发布流程。"),
     "ops/AGENTS.md": moduleAgents("ops", "../AGENTS.md", "make build-deploy && make build-recovery", [
       "部署、恢复、云端分发和发布工具",
@@ -282,12 +315,14 @@ function buildFiles(ctx) {
 function rootReadme(ctx) {
   return `# ${ctx.projectTitle}
 
-这是一个 VOMS 风格的架构 demo 项目。它保留清晰的 monorepo 分层、模块入口文档、文件夹索引和架构地图，但不绑定具体业务实现。
+这是一个 VOMS 风格的架构 demo 项目。它保留清晰的 monorepo 分层、模块入口文档、文件夹索引和架构地图，并内置一个用户 CRUD 纵切片。
 
 ## 快速入口
 
 \`\`\`bash
 make help
+make dev-backend
+curl -s http://127.0.0.1:8080/api/v1/users
 make tree
 \`\`\`
 
@@ -297,6 +332,7 @@ make tree
 - 用每个模块的 \`AGENTS.md\` 说明协作入口、当前门禁和适用范围。
 - 用 \`FOLDER_INDEX.md\` 描述文件夹层次、依赖方向和维护规则。
 - 用 \`codemap.md\` 描述模块的 Responsibility、Design、Flow、Integration。
+- 用 \`backend/internal/*/user\`、\`front/admin/web/src/views/users\` 和 \`docs/06-api\` 展示一条完整用户 CRUD 业务链路。
 
 生成时间：${ctx.generatedAt}
 `;
@@ -408,15 +444,17 @@ function rootCodemap(ctx) {
 }
 
 function rootMakefile() {
-  return `.PHONY: help tree build-backend build-front-admin build-front-public check-miniprogram build-deploy build-recovery build-cloud docs-check build-all
+  return `.PHONY: help tree dev-backend verify-user-crud build-backend build-front-admin build-front-public check-miniprogram build-deploy build-recovery build-cloud docs-check build-all
 
 .DEFAULT_GOAL := help
 
 help:
 \t@echo "Demo architecture commands:"
 \t@echo "  make tree              - show top-level architecture tree"
-\t@echo "  make build-backend     - placeholder backend gate"
-\t@echo "  make build-front-admin - placeholder admin web gate"
+\t@echo "  make dev-backend       - run the demo Go API on :8080"
+\t@echo "  make verify-user-crud  - curl the running user CRUD API"
+\t@echo "  make build-backend     - run backend tests"
+\t@echo "  make build-front-admin - install/build admin Web"
 \t@echo "  make build-front-public - placeholder public web gate"
 \t@echo "  make check-miniprogram - placeholder mini program gate"
 \t@echo "  make build-deploy      - placeholder deploy tool gate"
@@ -427,11 +465,22 @@ help:
 tree:
 \t@find . -maxdepth 4 -type d | sort | sed 's#^./##'
 
+dev-backend:
+\t@cd backend && go run ./cmd/server
+
+verify-user-crud:
+\t@curl -fsS http://127.0.0.1:8080/api/v1/health
+\t@echo ""
+\t@curl -fsS -X POST http://127.0.0.1:8080/api/v1/users -H 'Content-Type: application/json' -d '{"name":"Demo User","email":"demo@example.com","role":"operator","status":"active"}'
+\t@echo ""
+\t@curl -fsS http://127.0.0.1:8080/api/v1/users
+\t@echo ""
+
 build-backend:
-\t@echo "backend gate placeholder: cd backend && go test ./..."
+\t@cd backend && go test ./...
 
 build-front-admin:
-\t@echo "admin web gate placeholder: cd front/admin/web && pnpm build"
+\t@cd front/admin/web && npm install && npm run build
 
 build-front-public:
 \t@echo "public web gate placeholder: cd front/public && pnpm build"
@@ -493,6 +542,7 @@ function backendFolderIndex() {
 
 \`backend\` 是系统核心服务模块，采用分层架构组织业务、接口和基础设施。
 入口层位于 \`cmd/\`，业务核心位于 \`internal/\`，并通过 \`configs/\` 与 \`migrations/\` 管理运行配置和数据库演进。
+本 demo 提供一个用户 CRUD 纵切片，可直接运行并通过 HTTP 调用。
 
 ## 文件清单（核心）
 
@@ -513,22 +563,27 @@ function backendFolderIndex() {
 ### \`internal/domain/\`
 - 地位: 领域层
 - 功能: 实体、领域规则、仓储接口约束
+- 示例: \`internal/domain/user\` 定义用户实体、状态、角色和仓储契约
 
 ### \`internal/usecase/\`
 - 地位: 应用服务层
 - 功能: 编排业务流程与事务边界
+- 示例: \`internal/usecase/user.Service\` 编排创建、查询、更新和删除用户
 
 ### \`internal/interface/\`
 - 地位: 接口适配层
 - 功能: HTTP/gRPC 协议适配、参数绑定与响应封装
+- 示例: \`internal/interface/rest.UserHandler\` 暴露 \`/api/v1/users\`
 
 ### \`internal/infrastructure/\`
 - 地位: 基础设施实现层
 - 功能: 数据库、缓存、消息、日志、可观测等技术实现
+- 示例: \`internal/infrastructure/memory.UserRepository\` 提供内存仓储
 
 ### \`internal/wire/\`
 - 地位: 组装层
 - 功能: 应用依赖注入与生命周期管理
+- 示例: \`internal/wire.NewApp\` 装配仓储、用例和 HTTP 路由
 
 ### \`migrations/up/\`
 - 地位: 数据库 schema 演进入口
@@ -544,7 +599,7 @@ function backendCodemap() {
 
 ## Responsibility
 
-提供系统 API、领域核心、异步任务、权限与基础设施适配。
+提供系统 API、领域核心、异步任务、权限与基础设施适配。本 demo 内置用户 CRUD 纵切片。
 
 ## Design
 
@@ -557,7 +612,7 @@ function backendCodemap() {
 
 ## Flow
 
-请求进入接口层，接口层调用用例层，用例层围绕领域对象执行业务规则，并通过基础设施层完成持久化、缓存、消息和外部调用。
+用户 CRUD 请求进入 \`internal/interface/rest.UserHandler\`，Handler 调用 \`internal/usecase/user.Service\`，Service 围绕 \`internal/domain/user.User\` 执行业务规则，并通过 \`internal/infrastructure/memory.UserRepository\` 完成持久化。
 `;
 }
 
@@ -640,6 +695,1033 @@ ${title} 承载对应用户群体的 Web 交互、路由、状态和后端 API �
 `;
 }
 
+function backendGoMod(ctx) {
+  return `module ${moduleName(ctx.projectName)}/backend
+
+go 1.22
+`;
+}
+
+function backendServerMain(ctx) {
+  const mod = moduleName(ctx.projectName);
+  return `package main
+
+import (
+\t"log"
+\t"net/http"
+
+\t"${mod}/backend/internal/wire"
+)
+
+func main() {
+\tapp := wire.NewApp()
+\tserver := &http.Server{
+\t\tAddr:    ":8080",
+\t\tHandler: app.Router,
+\t}
+
+\tlog.Println("demo backend listening on http://127.0.0.1:8080")
+\tlog.Println("user CRUD API: http://127.0.0.1:8080/api/v1/users")
+\tif err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+\t\tlog.Fatal(err)
+\t}
+}
+`;
+}
+
+function backendUserDomainModel() {
+  return `package user
+
+import (
+\t"errors"
+\t"net/mail"
+\t"strings"
+\t"time"
+)
+
+type Status string
+
+const (
+\tStatusActive   Status = "active"
+\tStatusDisabled Status = "disabled"
+)
+
+type User struct {
+\tID        string    \`json:"id"\`
+\tName      string    \`json:"name"\`
+\tEmail     string    \`json:"email"\`
+\tRole      string    \`json:"role"\`
+\tStatus    Status    \`json:"status"\`
+\tCreatedAt time.Time \`json:"created_at"\`
+\tUpdatedAt time.Time \`json:"updated_at"\`
+}
+
+type CreateInput struct {
+\tName   string \`json:"name"\`
+\tEmail  string \`json:"email"\`
+\tRole   string \`json:"role"\`
+\tStatus Status \`json:"status"\`
+}
+
+type UpdateInput struct {
+\tName   string \`json:"name"\`
+\tEmail  string \`json:"email"\`
+\tRole   string \`json:"role"\`
+\tStatus Status \`json:"status"\`
+}
+
+func NewUser(id string, input CreateInput, now time.Time) (User, error) {
+\tinput = normalizeCreateInput(input)
+\tif err := validate(input.Name, input.Email, input.Role, input.Status); err != nil {
+\t\treturn User{}, err
+\t}
+
+\treturn User{
+\t\tID:        id,
+\t\tName:      input.Name,
+\t\tEmail:     input.Email,
+\t\tRole:      input.Role,
+\t\tStatus:    input.Status,
+\t\tCreatedAt: now,
+\t\tUpdatedAt: now,
+\t}, nil
+}
+
+func (u User) Apply(input UpdateInput, now time.Time) (User, error) {
+\tinput = normalizeUpdateInput(input)
+\tif err := validate(input.Name, input.Email, input.Role, input.Status); err != nil {
+\t\treturn User{}, err
+\t}
+
+\tu.Name = input.Name
+\tu.Email = input.Email
+\tu.Role = input.Role
+\tu.Status = input.Status
+\tu.UpdatedAt = now
+\treturn u, nil
+}
+
+func normalizeCreateInput(input CreateInput) CreateInput {
+\tinput.Name = strings.TrimSpace(input.Name)
+\tinput.Email = strings.ToLower(strings.TrimSpace(input.Email))
+\tinput.Role = strings.TrimSpace(input.Role)
+\tif input.Status == "" {
+\t\tinput.Status = StatusActive
+\t}
+\treturn input
+}
+
+func normalizeUpdateInput(input UpdateInput) UpdateInput {
+\treturn UpdateInput(normalizeCreateInput(CreateInput(input)))
+}
+
+func validate(name string, email string, role string, status Status) error {
+\tif name == "" {
+\t\treturn errors.New("name is required")
+\t}
+\tif _, err := mail.ParseAddress(email); err != nil {
+\t\treturn errors.New("email is invalid")
+\t}
+\tif role == "" {
+\t\treturn errors.New("role is required")
+\t}
+\tif status != StatusActive && status != StatusDisabled {
+\t\treturn errors.New("status must be active or disabled")
+\t}
+\treturn nil
+}
+`;
+}
+
+function backendUserRepositoryContract() {
+  return `package user
+
+import (
+\t"context"
+\t"errors"
+)
+
+var (
+\tErrNotFound       = errors.New("user not found")
+\tErrEmailConflicts = errors.New("email already exists")
+)
+
+type Repository interface {
+\tCreate(ctx context.Context, user User) (User, error)
+\tList(ctx context.Context) ([]User, error)
+\tFindByID(ctx context.Context, id string) (User, error)
+\tUpdate(ctx context.Context, user User) (User, error)
+\tDelete(ctx context.Context, id string) error
+\tNextID(ctx context.Context) (string, error)
+}
+`;
+}
+
+function backendUserService(ctx) {
+  const mod = moduleName(ctx.projectName);
+  return `package user
+
+import (
+\t"context"
+\t"time"
+
+\tdomain "${mod}/backend/internal/domain/user"
+)
+
+type Service struct {
+\trepository domain.Repository
+\tnow        func() time.Time
+}
+
+func NewService(repository domain.Repository) *Service {
+\treturn &Service{
+\t\trepository: repository,
+\t\tnow:        time.Now,
+\t}
+}
+
+func (s *Service) Create(ctx context.Context, input domain.CreateInput) (domain.User, error) {
+\tid, err := s.repository.NextID(ctx)
+\tif err != nil {
+\t\treturn domain.User{}, err
+\t}
+
+\tentity, err := domain.NewUser(id, input, s.now().UTC())
+\tif err != nil {
+\t\treturn domain.User{}, err
+\t}
+\treturn s.repository.Create(ctx, entity)
+}
+
+func (s *Service) List(ctx context.Context) ([]domain.User, error) {
+\treturn s.repository.List(ctx)
+}
+
+func (s *Service) Get(ctx context.Context, id string) (domain.User, error) {
+\treturn s.repository.FindByID(ctx, id)
+}
+
+func (s *Service) Update(ctx context.Context, id string, input domain.UpdateInput) (domain.User, error) {
+\tcurrent, err := s.repository.FindByID(ctx, id)
+\tif err != nil {
+\t\treturn domain.User{}, err
+\t}
+
+\tnext, err := current.Apply(input, s.now().UTC())
+\tif err != nil {
+\t\treturn domain.User{}, err
+\t}
+\treturn s.repository.Update(ctx, next)
+}
+
+func (s *Service) Delete(ctx context.Context, id string) error {
+\treturn s.repository.Delete(ctx, id)
+}
+`;
+}
+
+function backendRestResponse() {
+  return `package rest
+
+import (
+\t"encoding/json"
+\t"net/http"
+)
+
+type response struct {
+\tCode    int         \`json:"code"\`
+\tMessage string      \`json:"message"\`
+\tData    interface{} \`json:"data,omitempty"\`
+}
+
+func writeJSON(w http.ResponseWriter, status int, message string, data interface{}) {
+\tw.Header().Set("Content-Type", "application/json; charset=utf-8")
+\tw.WriteHeader(status)
+\t_ = json.NewEncoder(w).Encode(response{
+\t\tCode:    status,
+\t\tMessage: message,
+\t\tData:    data,
+\t})
+}
+
+func writeError(w http.ResponseWriter, status int, message string) {
+\twriteJSON(w, status, message, nil)
+}
+`;
+}
+
+function backendUserHandler(ctx) {
+  const mod = moduleName(ctx.projectName);
+  return `package rest
+
+import (
+\t"encoding/json"
+\t"errors"
+\t"net/http"
+\t"strings"
+
+\tdomain "${mod}/backend/internal/domain/user"
+\tuseruc "${mod}/backend/internal/usecase/user"
+)
+
+type UserHandler struct {
+\tservice *useruc.Service
+}
+
+func NewUserHandler(service *useruc.Service) *UserHandler {
+\treturn &UserHandler{service: service}
+}
+
+func (h *UserHandler) Register(mux *http.ServeMux) {
+\tmux.HandleFunc("GET /api/v1/users", h.list)
+\tmux.HandleFunc("POST /api/v1/users", h.create)
+\tmux.HandleFunc("GET /api/v1/users/{id}", h.get)
+\tmux.HandleFunc("PUT /api/v1/users/{id}", h.update)
+\tmux.HandleFunc("DELETE /api/v1/users/{id}", h.delete)
+}
+
+func (h *UserHandler) list(w http.ResponseWriter, r *http.Request) {
+\titems, err := h.service.List(r.Context())
+\tif err != nil {
+\t\twriteError(w, http.StatusInternalServerError, err.Error())
+\t\treturn
+\t}
+\twriteJSON(w, http.StatusOK, "ok", map[string]interface{}{"items": items})
+}
+
+func (h *UserHandler) create(w http.ResponseWriter, r *http.Request) {
+\tvar input domain.CreateInput
+\tif err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+\t\twriteError(w, http.StatusBadRequest, "invalid json body")
+\t\treturn
+\t}
+
+\tentity, err := h.service.Create(r.Context(), input)
+\tif err != nil {
+\t\thandleUserError(w, err)
+\t\treturn
+\t}
+\twriteJSON(w, http.StatusCreated, "created", entity)
+}
+
+func (h *UserHandler) get(w http.ResponseWriter, r *http.Request) {
+\tentity, err := h.service.Get(r.Context(), strings.TrimSpace(r.PathValue("id")))
+\tif err != nil {
+\t\thandleUserError(w, err)
+\t\treturn
+\t}
+\twriteJSON(w, http.StatusOK, "ok", entity)
+}
+
+func (h *UserHandler) update(w http.ResponseWriter, r *http.Request) {
+\tvar input domain.UpdateInput
+\tif err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+\t\twriteError(w, http.StatusBadRequest, "invalid json body")
+\t\treturn
+\t}
+
+\tentity, err := h.service.Update(r.Context(), strings.TrimSpace(r.PathValue("id")), input)
+\tif err != nil {
+\t\thandleUserError(w, err)
+\t\treturn
+\t}
+\twriteJSON(w, http.StatusOK, "updated", entity)
+}
+
+func (h *UserHandler) delete(w http.ResponseWriter, r *http.Request) {
+\tif err := h.service.Delete(r.Context(), strings.TrimSpace(r.PathValue("id"))); err != nil {
+\t\thandleUserError(w, err)
+\t\treturn
+\t}
+\twriteJSON(w, http.StatusOK, "deleted", map[string]string{"id": r.PathValue("id")})
+}
+
+func handleUserError(w http.ResponseWriter, err error) {
+\tswitch {
+\tcase errors.Is(err, domain.ErrNotFound):
+\t\twriteError(w, http.StatusNotFound, err.Error())
+\tcase errors.Is(err, domain.ErrEmailConflicts):
+\t\twriteError(w, http.StatusConflict, err.Error())
+\tdefault:
+\t\twriteError(w, http.StatusBadRequest, err.Error())
+\t}
+}
+`;
+}
+
+function backendMemoryUserRepository(ctx) {
+  const mod = moduleName(ctx.projectName);
+  return `package memory
+
+import (
+\t"context"
+\t"fmt"
+\t"sort"
+\t"strings"
+\t"sync"
+
+\tdomain "${mod}/backend/internal/domain/user"
+)
+
+type UserRepository struct {
+\tmu       sync.RWMutex
+\tsequence int
+\titems    map[string]domain.User
+}
+
+func NewUserRepository() *UserRepository {
+\treturn &UserRepository{
+\t\titems: make(map[string]domain.User),
+\t}
+}
+
+func (r *UserRepository) NextID(context.Context) (string, error) {
+\tr.mu.Lock()
+\tdefer r.mu.Unlock()
+\tr.sequence += 1
+\treturn fmt.Sprintf("usr_%04d", r.sequence), nil
+}
+
+func (r *UserRepository) Create(_ context.Context, entity domain.User) (domain.User, error) {
+\tr.mu.Lock()
+\tdefer r.mu.Unlock()
+\tif r.emailExists(entity.Email, entity.ID) {
+\t\treturn domain.User{}, domain.ErrEmailConflicts
+\t}
+\tr.items[entity.ID] = entity
+\treturn entity, nil
+}
+
+func (r *UserRepository) List(context.Context) ([]domain.User, error) {
+\tr.mu.RLock()
+\tdefer r.mu.RUnlock()
+
+\titems := make([]domain.User, 0, len(r.items))
+\tfor _, item := range r.items {
+\t\titems = append(items, item)
+\t}
+\tsort.Slice(items, func(i, j int) bool {
+\t\treturn items[i].CreatedAt.Before(items[j].CreatedAt)
+\t})
+\treturn items, nil
+}
+
+func (r *UserRepository) FindByID(_ context.Context, id string) (domain.User, error) {
+\tr.mu.RLock()
+\tdefer r.mu.RUnlock()
+\titem, ok := r.items[id]
+\tif !ok {
+\t\treturn domain.User{}, domain.ErrNotFound
+\t}
+\treturn item, nil
+}
+
+func (r *UserRepository) Update(_ context.Context, entity domain.User) (domain.User, error) {
+\tr.mu.Lock()
+\tdefer r.mu.Unlock()
+\tif _, ok := r.items[entity.ID]; !ok {
+\t\treturn domain.User{}, domain.ErrNotFound
+\t}
+\tif r.emailExists(entity.Email, entity.ID) {
+\t\treturn domain.User{}, domain.ErrEmailConflicts
+\t}
+\tr.items[entity.ID] = entity
+\treturn entity, nil
+}
+
+func (r *UserRepository) Delete(_ context.Context, id string) error {
+\tr.mu.Lock()
+\tdefer r.mu.Unlock()
+\tif _, ok := r.items[id]; !ok {
+\t\treturn domain.ErrNotFound
+\t}
+\tdelete(r.items, id)
+\treturn nil
+}
+
+func (r *UserRepository) emailExists(email string, exceptID string) bool {
+\tfor _, item := range r.items {
+\t\tif item.ID != exceptID && strings.EqualFold(item.Email, email) {
+\t\t\treturn true
+\t\t}
+\t}
+\treturn false
+}
+`;
+}
+
+function backendWireApp(ctx) {
+  const mod = moduleName(ctx.projectName);
+  return `package wire
+
+import (
+\t"net/http"
+
+\t"${mod}/backend/internal/infrastructure/memory"
+\t"${mod}/backend/internal/interface/rest"
+\tuseruc "${mod}/backend/internal/usecase/user"
+)
+
+type App struct {
+\tRouter http.Handler
+}
+
+func NewApp() *App {
+\tmux := http.NewServeMux()
+\tuserRepository := memory.NewUserRepository()
+\tuserService := useruc.NewService(userRepository)
+\tuserHandler := rest.NewUserHandler(userService)
+
+\tmux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
+\t\tw.Header().Set("Content-Type", "application/json; charset=utf-8")
+\t\t_, _ = w.Write([]byte(\`{"code":200,"message":"ok","data":{"service":"demo-backend"}}\`))
+\t})
+\tuserHandler.Register(mux)
+
+\treturn &App{Router: withCORS(mux)}
+}
+
+func withCORS(next http.Handler) http.Handler {
+\treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+\t\tw.Header().Set("Access-Control-Allow-Origin", "*")
+\t\tw.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
+\t\tw.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+\t\tif r.Method == http.MethodOptions {
+\t\t\tw.WriteHeader(http.StatusNoContent)
+\t\t\treturn
+\t\t}
+\t\tnext.ServeHTTP(w, r)
+\t})
+}
+`;
+}
+
+function backendUsersMigration() {
+  return `CREATE TABLE users (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  email TEXT NOT NULL UNIQUE,
+  role TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('active', 'disabled')),
+  created_at TIMESTAMPTZ NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX idx_users_status ON users(status);
+`;
+}
+
+function adminPackageJson(ctx) {
+  return `{
+  "name": "${packageName(ctx.projectName)}-admin-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@vitejs/plugin-vue": "^5.2.4",
+    "pinia": "^2.3.1",
+    "vite": "^5.4.19",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "vue-tsc": "^2.2.10"
+  }
+}
+`;
+}
+
+function adminPnpmWorkspace() {
+  return `packages:
+  - "."
+
+onlyBuiltDependencies:
+  - esbuild
+  - vue-demi
+`;
+}
+
+function adminIndexHtml(ctx) {
+  return `<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>${ctx.projectTitle} Admin</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
+`;
+}
+
+function adminViteConfig() {
+  return `import { defineConfig } from "vite";
+import vue from "@vitejs/plugin-vue";
+
+export default defineConfig({
+  plugins: [vue()],
+  server: {
+    port: 5173,
+    proxy: {
+      "/api": "http://127.0.0.1:8080",
+    },
+  },
+});
+`;
+}
+
+function adminTsconfig() {
+  return `{
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "jsx": "preserve",
+    "sourceMap": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.ts", "src/**/*.vue"]
+}
+`;
+}
+
+function adminMainTs() {
+  return `import { createApp } from "vue";
+import { createPinia } from "pinia";
+import App from "./App.vue";
+import { router } from "./router";
+
+createApp(App).use(createPinia()).use(router).mount("#app");
+`;
+}
+
+function adminAppVue(ctx) {
+  return `<template>
+  <main class="shell">
+    <aside class="sidebar">
+      <strong>${ctx.projectTitle}</strong>
+      <RouterLink to="/users">用户管理</RouterLink>
+    </aside>
+    <section class="content">
+      <RouterView />
+    </section>
+  </main>
+</template>
+
+<style scoped>
+.shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  background: #f6f8fb;
+  color: #1f2937;
+  font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 24px;
+  background: #0f172a;
+  color: #fff;
+}
+.sidebar a {
+  color: #dbeafe;
+  text-decoration: none;
+}
+.content {
+  padding: 28px;
+}
+@media (max-width: 760px) {
+  .shell {
+    grid-template-columns: 1fr;
+  }
+  .sidebar {
+    flex-direction: row;
+    align-items: center;
+  }
+}
+</style>
+`;
+}
+
+function adminHttpApi() {
+  return `const API_BASE = import.meta.env.VITE_API_BASE || "/api/v1";
+
+export interface ApiResponse<T> {
+  code: number;
+  message: string;
+  data: T;
+}
+
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(\`\${API_BASE}\${path}\`, {
+    headers: {
+      "Content-Type": "application/json",
+      ...(init?.headers || {}),
+    },
+    ...init,
+  });
+  const payload = (await response.json()) as ApiResponse<T>;
+  if (!response.ok) {
+    throw new Error(payload.message || "request failed");
+  }
+  return payload.data;
+}
+`;
+}
+
+function adminUsersApi() {
+  return `import { request } from "./http";
+
+export type UserStatus = "active" | "disabled";
+
+export interface User {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  status: UserStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UserPayload {
+  name: string;
+  email: string;
+  role: string;
+  status: UserStatus;
+}
+
+export function listUsers() {
+  return request<{ items: User[] }>("/users");
+}
+
+export function createUser(payload: UserPayload) {
+  return request<User>("/users", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateUser(id: string, payload: UserPayload) {
+  return request<User>(\`/users/\${id}\`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteUser(id: string) {
+  return request<{ id: string }>(\`/users/\${id}\`, {
+    method: "DELETE",
+  });
+}
+`;
+}
+
+function adminUserStore() {
+  return `import { defineStore } from "pinia";
+import { createUser, deleteUser, listUsers, updateUser, type User, type UserPayload } from "../api/users";
+
+export const useUserStore = defineStore("users", {
+  state: () => ({
+    items: [] as User[],
+    loading: false,
+    error: "",
+  }),
+  actions: {
+    async fetchUsers() {
+      this.loading = true;
+      this.error = "";
+      try {
+        const result = await listUsers();
+        this.items = result.items;
+      } catch (error) {
+        this.error = error instanceof Error ? error.message : "加载用户失败";
+      } finally {
+        this.loading = false;
+      }
+    },
+    async create(payload: UserPayload) {
+      await createUser(payload);
+      await this.fetchUsers();
+    },
+    async update(id: string, payload: UserPayload) {
+      await updateUser(id, payload);
+      await this.fetchUsers();
+    },
+    async remove(id: string) {
+      await deleteUser(id);
+      await this.fetchUsers();
+    },
+  },
+});
+`;
+}
+
+function adminRouter() {
+  return `import { createRouter, createWebHistory } from "vue-router";
+import UserManagement from "../views/users/UserManagement.vue";
+
+export const router = createRouter({
+  history: createWebHistory(),
+  routes: [
+    { path: "/", redirect: "/users" },
+    {
+      path: "/users",
+      name: "UserManagement",
+      component: UserManagement,
+      meta: {
+        title: "用户管理",
+      },
+    },
+  ],
+});
+`;
+}
+
+function adminUserManagementVue() {
+  return `<script setup lang="ts">
+import { computed, onMounted, reactive, ref } from "vue";
+import { useUserStore } from "../../store/userStore";
+import type { User, UserPayload, UserStatus } from "../../api/users";
+
+const store = useUserStore();
+const editingId = ref<string | null>(null);
+const form = reactive<UserPayload>({
+  name: "",
+  email: "",
+  role: "operator",
+  status: "active",
+});
+
+const isEditing = computed(() => Boolean(editingId.value));
+
+onMounted(() => {
+  store.fetchUsers();
+});
+
+function resetForm() {
+  editingId.value = null;
+  form.name = "";
+  form.email = "";
+  form.role = "operator";
+  form.status = "active";
+}
+
+function editUser(user: User) {
+  editingId.value = user.id;
+  form.name = user.name;
+  form.email = user.email;
+  form.role = user.role;
+  form.status = user.status;
+}
+
+async function submit() {
+  if (editingId.value) {
+    await store.update(editingId.value, { ...form });
+  } else {
+    await store.create({ ...form });
+  }
+  resetForm();
+}
+
+function statusText(status: UserStatus) {
+  return status === "active" ? "启用" : "禁用";
+}
+</script>
+
+<template>
+  <section class="page">
+    <header class="page-header">
+      <div>
+        <p class="eyebrow">Admin / Users</p>
+        <h1>用户管理</h1>
+      </div>
+      <button type="button" class="ghost" @click="store.fetchUsers">刷新</button>
+    </header>
+
+    <form class="panel form" @submit.prevent="submit">
+      <label>
+        姓名
+        <input v-model="form.name" required placeholder="Demo User" />
+      </label>
+      <label>
+        邮箱
+        <input v-model="form.email" required type="email" placeholder="demo@example.com" />
+      </label>
+      <label>
+        角色
+        <input v-model="form.role" required placeholder="operator" />
+      </label>
+      <label>
+        状态
+        <select v-model="form.status">
+          <option value="active">启用</option>
+          <option value="disabled">禁用</option>
+        </select>
+      </label>
+      <div class="actions">
+        <button type="submit">{{ isEditing ? "保存用户" : "创建用户" }}</button>
+        <button type="button" class="ghost" @click="resetForm">重置</button>
+      </div>
+    </form>
+
+    <p v-if="store.error" class="error">{{ store.error }}</p>
+
+    <section class="panel">
+      <table>
+        <thead>
+          <tr>
+            <th>姓名</th>
+            <th>邮箱</th>
+            <th>角色</th>
+            <th>状态</th>
+            <th>更新时间</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-if="store.loading">
+            <td colspan="6">加载中...</td>
+          </tr>
+          <tr v-else-if="store.items.length === 0">
+            <td colspan="6">暂无用户</td>
+          </tr>
+          <tr v-for="user in store.items" :key="user.id">
+            <td>{{ user.name }}</td>
+            <td>{{ user.email }}</td>
+            <td>{{ user.role }}</td>
+            <td><span class="status">{{ statusText(user.status) }}</span></td>
+            <td>{{ new Date(user.updated_at).toLocaleString() }}</td>
+            <td class="row-actions">
+              <button type="button" class="ghost" @click="editUser(user)">编辑</button>
+              <button type="button" class="danger" @click="store.remove(user.id)">删除</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+  </section>
+</template>
+
+<style scoped>
+.page {
+  display: grid;
+  gap: 20px;
+}
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+.eyebrow {
+  margin: 0 0 4px;
+  color: #64748b;
+  font-size: 13px;
+}
+h1 {
+  margin: 0;
+  font-size: 26px;
+}
+.panel {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 18px;
+}
+.form {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+  gap: 14px;
+  align-items: end;
+}
+label {
+  display: grid;
+  gap: 6px;
+  color: #475569;
+  font-size: 13px;
+}
+input,
+select {
+  height: 38px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 0 10px;
+  font: inherit;
+}
+button {
+  height: 38px;
+  border: 0;
+  border-radius: 6px;
+  padding: 0 14px;
+  background: #2563eb;
+  color: #fff;
+  cursor: pointer;
+}
+.ghost {
+  background: #e2e8f0;
+  color: #1f2937;
+}
+.danger {
+  background: #dc2626;
+}
+.actions,
+.row-actions {
+  display: flex;
+  gap: 8px;
+}
+.error {
+  margin: 0;
+  color: #b91c1c;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+th,
+td {
+  text-align: left;
+  border-bottom: 1px solid #e2e8f0;
+  padding: 12px 10px;
+}
+th {
+  color: #475569;
+  font-size: 13px;
+}
+.status {
+  display: inline-flex;
+  border-radius: 999px;
+  background: #dcfce7;
+  color: #166534;
+  padding: 3px 9px;
+  font-size: 12px;
+}
+@media (max-width: 980px) {
+  .form {
+    grid-template-columns: 1fr;
+  }
+}
+</style>
+`;
+}
+
 function miniprogramFolderIndex() {
   return `# front/miniprogram 文件夹索引
 
@@ -687,6 +1769,121 @@ function docsCodemap() {
 ## Design
 
 文档按生命周期组织，从业务需求到接口契约，再到部署运维。
+`;
+}
+
+function userBusinessFlowDoc() {
+  return `# 业务流设计
+
+## 用户 CRUD 示例流
+
+### 创建用户
+
+1. 管理员在 \`front/admin/web/src/views/users/UserManagement.vue\` 填写用户表单。
+2. 页面调用 \`src/store/userStore.ts\` 的 \`create(...)\` action。
+3. Store 调用 \`src/api/users.ts#createUser\` 发起 \`POST /api/v1/users\`。
+4. 后端 \`internal/interface/rest.UserHandler\` 绑定请求并调用用例层。
+5. \`internal/usecase/user.Service\` 创建领域实体并调用仓储。
+6. \`internal/infrastructure/memory.UserRepository\` 保存用户并返回结果。
+
+### 更新和删除用户
+
+- 更新走 \`PUT /api/v1/users/{id}\`，先读取当前实体，再应用领域校验。
+- 删除走 \`DELETE /api/v1/users/{id}\`，仓储负责确认目标存在。
+- 邮箱唯一性由仓储实现约束，领域层负责字段合法性。
+`;
+}
+
+function userDataModelDoc() {
+  return `# 数据模型
+
+## users
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| \`id\` | string | 用户 ID，demo 中形如 \`usr_0001\` |
+| \`name\` | string | 用户姓名 |
+| \`email\` | string | 邮箱，唯一 |
+| \`role\` | string | 角色编码，如 \`operator\`、\`admin\` |
+| \`status\` | enum | \`active\` 或 \`disabled\` |
+| \`created_at\` | timestamp | 创建时间 |
+| \`updated_at\` | timestamp | 更新时间 |
+
+SQL 示例见 \`backend/migrations/up/000001_init_users.sql\`。
+`;
+}
+
+function userApiDoc() {
+  return `# API 文档
+
+## 用户管理
+
+基础路径：\`/api/v1/users\`
+
+### 列表
+
+\`\`\`http
+GET /api/v1/users
+\`\`\`
+
+响应：
+
+\`\`\`json
+{
+  "code": 200,
+  "message": "ok",
+  "data": {
+    "items": []
+  }
+}
+\`\`\`
+
+### 创建
+
+\`\`\`http
+POST /api/v1/users
+Content-Type: application/json
+
+{
+  "name": "Demo User",
+  "email": "demo@example.com",
+  "role": "operator",
+  "status": "active"
+}
+\`\`\`
+
+### 详情
+
+\`\`\`http
+GET /api/v1/users/usr_0001
+\`\`\`
+
+### 更新
+
+\`\`\`http
+PUT /api/v1/users/usr_0001
+Content-Type: application/json
+
+{
+  "name": "Demo Admin",
+  "email": "admin@example.com",
+  "role": "admin",
+  "status": "active"
+}
+\`\`\`
+
+### 删除
+
+\`\`\`http
+DELETE /api/v1/users/usr_0001
+\`\`\`
+
+## 本地验证
+
+\`\`\`bash
+make dev-backend
+make verify-user-crud
+\`\`\`
 `;
 }
 
@@ -823,4 +2020,15 @@ function toTitle(value) {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+function moduleName(projectName) {
+  return `example.com/${packageName(projectName)}`;
+}
+
+function packageName(projectName) {
+  return projectName
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "voms-architecture-demo";
 }
