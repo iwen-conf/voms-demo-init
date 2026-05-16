@@ -1,0 +1,38 @@
+{
+  "name": "voms-demo-init",
+  "version": "0.1.0",
+  "description": "Generate a VOMS-style full-stack monorepo architecture demo.",
+  "type": "module",
+  "bin": {
+    "voms-demo-init": "./bin/voms-demo-init.mjs"
+  },
+  "files": [
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "check": "node --check bin/voms-demo-init.mjs",
+    "smoke": "rm -rf dist/smoke-demo && node bin/voms-demo-init.mjs smoke-demo --dir dist/smoke-demo && make -C dist/smoke-demo help"
+  },
+  "keywords": [
+    "voms",
+    "scaffold",
+    "monorepo",
+    "architecture",
+    "cli"
+  ],
+  "author": "iwen-conf",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/iwen-conf/voms-demo-init.git"
+  },
+  "bugs": {
+    "url": "https://github.com/iwen-conf/voms-demo-init/issues"
+  },
+  "homepage": "https://github.com/iwen-conf/voms-demo-init#readme"
+}
